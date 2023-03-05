@@ -4,7 +4,6 @@ section .data
 ; will be initialized on program load
 	_context	dd	0	; scratch variable
 	.ret_addr	dd	0	; where to jmp back to
-	.restore_eax	dd	0	; registers to restore prior to jumping back 
 	.restore_esp	dd	0
 	.restore_ebp	dd	0	
 
@@ -26,7 +25,7 @@ _start:
 	add		ebx, jmp_back - .program_offset	; actual addr of jmp_back
 
 	mov 	ecx, [esp] 	; original value of eax
-	mov		[eax + 8], ecx ; move original eax into restore_eax
+	mov		[eax], ecx ; move original eax into restore_eax
 
 	call 	init	; call the c code, will not change any registers (calling convention)
 
@@ -46,16 +45,15 @@ _start:
 	mov		ecx, [esp + 8]
 	mov		edx, [esp + 12]
 
-	mov		esp, [eax + 12]
-	mov		ebp, [eax + 16]
-	mov		eax, [eax + 8]
+	mov		esp, [eax + 8]
+	mov		ebp, [eax + 12]
+	mov		eax, [eax]
 
 	; jump back to where it came from, the state is the exact same
 jmp_back:
 	nop
 	nop
 	nop
-
 	nop
 	nop
 
