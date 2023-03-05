@@ -1,13 +1,25 @@
 #include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
 
-typedef void* (__attribute__((stdcall)) *CreateFileW)(const wchar_t*, uint32_t, uint32_t, void*, uint32_t, uint32_t, void*); 
+typedef void* __stdcall (*CreateFileA)(const char*, uint32_t, uint32_t, void*, uint32_t, uint32_t, void*); 
+
 
 #define GENERIC_READ 0x80000000
+#define GENERIC_WRITE 0x40000000
+#define OPEN_ALWAYS 0x4
 
-CreateFileW create_file_w = (CreateFileW)0x758D3810;
+CreateFileA create_file_a = (CreateFileA)0x758D3810;
 
-__attribute__ ((no_caller_saved_registers, fastcall))
+__attribute__ ((no_caller_saved_registers, cdecl))
 void init(void) {
-    create_file_w(L"C:\\Users\\josh\\Desktop\\test.txt",
-        GENERIC_READ, 0, NULL, 2, 0x80, NULL);
+
+    /*
+    void* handle = create_file_a("C:\\Users\\josh\\file.txt\0", GENERIC_READ | GENERIC_WRITE, 0,
+       NULL, OPEN_ALWAYS, 0, NULL);
+
+    if (handle == NULL) {
+        while (true) {}
+    }
+    */
 }

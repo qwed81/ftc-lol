@@ -28,8 +28,15 @@ pub struct WindowsLoader {
 #[repr(align(16))]
 struct AlignedContext(WOW64_CONTEXT);
 
-// a random address that is not taken to load the patch into
-const DEFAULT_ADDRESS: ExPtr = 0x4000_0000;
+#[repr(C)]
+#[derive(Debug)]
+struct PatchContext {
+    _context: u32,
+    ret_addr: ExPtr,
+    restore_eax: u32,
+    restore_esp: u32,
+    restore_ebp: u32
+}
 
 impl WindowsLoader {
 
@@ -216,13 +223,41 @@ impl WindowsLoader {
             return Err(());
         }
 
-        // change the starting and give it the address it needs to jump back to
-        let remote_context = (context.0.Eip, context.0.Eax);
-        let remote_context = unsafe { mem::transmute::<(u32, u32), [u8; 8]>(remote_context) };
-        self.mem_write_direct(context_addr, &remote_context);
+        // set the context so it can restore after executing
+        let patch_context = PatchContext {
+            _context: 0,
+            ret_addr: context.0.Eip,
+            restore_eax: context.0.Eax,
+            restore_ebp: context.0.Ebp,
+            restore_esp: context.0.Esp
+        };
 
+        println!("return to addr: {:x}", patch_context.ret_addr);
+        println!("restore eax: {:?}", patch_context.restore_eax);
+
+        let context_buf = unsafe { mem::transmute::<PatchContext, [u8; 20]>(patch_context) };
+        self.mem_write_direct(context_addr, &context_buf)?;
+
+        const STACK_ADDR: u32 = 0x4500_0000;
+        const STACK_SIZE: u32 = 4096 * 4;
+        // allocate a new stack so it does not touch the other stack
+        let alloc = unsafe {
+            memoryapi::VirtualAllocEx(self.h_proc, STACK_ADDR as *mut c_void,
+                STACK_SIZE as usize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE)
+        };
+
+        if alloc.is_null() {
+            let err = unsafe { errhandlingapi::GetLastError() }; 
+            println!("could allocate stack, error: {}", err);
+            return Err(());
+        }
+
+        // stack grows down
+        context.0.Ebp = STACK_ADDR + STACK_SIZE;
+        context.0.Esp = STACK_ADDR + STACK_SIZE;
+
+        // change instruction it starts at
         context.0.Eip = start_addr;
-        context.0.Eax = context_addr;
 
         let context_result = unsafe {
             winbase::Wow64SetThreadContext(thread_handle, &mut context.0)
