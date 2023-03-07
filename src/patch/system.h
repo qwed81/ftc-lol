@@ -2,8 +2,10 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+typedef uint16_t WCHAR; 
+
 typedef void* (__stdcall *CreateFileAType)(const char*, uint32_t, uint32_t, void*, uint32_t, uint32_t, void*); 
-typedef void* (__stdcall *CreateFileWType)(const wchar_t*, uint32_t, uint32_t, void*, uint32_t, uint32_t, void*); 
+typedef void* (__stdcall *CreateFileWType)(const WCHAR*, uint32_t, uint32_t, void*, uint32_t, uint32_t, void*); 
 
 typedef uint32_t (__stdcall *WriteFileType)(void*, const void*, uint32_t, uint32_t*, void*);
 typedef uint32_t (__stdcall *VirtualProtectType)(void*, uint32_t, uint32_t, uint32_t*);
