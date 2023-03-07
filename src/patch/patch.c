@@ -12,14 +12,19 @@ static void log_wstr(const WCHAR* msg);
 static uint32_t str_len(const char* str, uint32_t max);
 
 // hook setups
-static CreateFileWType hook_CreateFileW(CreateFileWType new_func);
+static CreateFileWType hook_CreateFileW();
+static CreateFileAType hook_CreateFileA();
 
 // hook functions
 __attribute__((stdcall))
 static void* my_CreateFileW(const WCHAR* name, uint32_t access, uint32_t share, void* security, uint32_t creation, uint32_t flags, void* template);
 
+__attribute__((stdcall))
+static void* my_CreateFileA(const char* name, uint32_t access, uint32_t share, void* security, uint32_t creation, uint32_t flags, void* template);
+
 static void* log_handle;
 static CreateFileWType post_hook_CreateFileW;
+static CreateFileAType post_hook_CreateFileA;
 
 // must be set to locate all of the other os functions
 void* kernel32_addr;
@@ -34,31 +39,45 @@ void init(void* _kernel32_addr) {
 
     log_str("log file working \n");
 
-    post_hook_CreateFileW = hook_CreateFileW(my_CreateFileW);
+    post_hook_CreateFileW = hook_CreateFileW();
     if (post_hook_CreateFileW == NULL) {
         return;
     }
-
     log_str("sucessfully hooked CreateFileW \n");
+
+    post_hook_CreateFileA = hook_CreateFileA();
+    if (post_hook_CreateFileA == NULL) {
+        return;
+    }
+    log_str("successfully hooked CreateFileA \n");
+
+}
+
+__attribute__((stdcall))
+static void* my_CreateFileA(const char* name, uint32_t access, uint32_t share, void* security,
+    uint32_t creation, uint32_t flags, void* template) {
+    
+    log_str("\ncreate file A: ");
+    log_str(name);
+
+    return post_hook_CreateFileA(name, access, share, security, creation, flags, template);
 }
 
 __attribute__((stdcall))
 static void* my_CreateFileW(const WCHAR* name, uint32_t access, uint32_t share, void* security,
     uint32_t creation, uint32_t flags, void* template) {
     
-    log_str("\ncreate file w: \n");
+    log_str("\ncreate file W: ");
     log_wstr(name);
 
     return post_hook_CreateFileW(name, access, share, security, creation, flags, template);
 }
 
-static CreateFileWType hook_CreateFileW(CreateFileWType new_func) {
-    void* addr = (void*)CreateFileWAddr;
+static void* hook_jump_fn(void* new_func, void* addr) {
     uint32_t old_protect = 0;
 
     uint32_t protect = VirtualProtect(addr, 200, PAGE_EXECUTE_READWRITE, &old_protect);
     if (protect == 0) {
-        log_str("hook_CreateFileW could not change to rwx \n");
         return NULL;
     }
 
@@ -73,13 +92,19 @@ static CreateFileWType hook_CreateFileW(CreateFileWType new_func) {
     *(int32_t*)(addr + 1) = offset_jmp;
 
     protect = VirtualProtect(addr, 200, PAGE_EXECUTE_READ, &old_protect);
-
     if (protect == 0) {
-        log_str("hook_CreateFileW could not change to rx \n");
         return NULL;
     }
 
-    return (CreateFileWType)new_addr;
+    return new_addr;
+}
+
+static CreateFileWType hook_CreateFileW() {
+    return (CreateFileWType)hook_jump_fn(my_CreateFileW, CreateFileWAddr);
+}
+
+static CreateFileAType hook_CreateFileA() {
+    return (CreateFileAType)hook_jump_fn(my_CreateFileA, CreateFileAAddr);
 }
 
 static uint32_t str_len(const char* str, uint32_t max) {
