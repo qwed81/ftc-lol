@@ -86,18 +86,18 @@ fn get_load_range(headers: &[ProgramHeader]) -> (ExPtr, ExPtr) {
 }
 
 // parse the symbol table for the context variable
-fn get_context_addr(elf: &Elf) -> ExPtr {
+fn get_addr(elf: &Elf, sym_name: &str) -> ExPtr {
     for sym in &elf.syms {
         let name = elf.strtab.get_at(sym.st_name);
         match name {
-            Some(name) if name == "_context" => {
+            Some(name) if name == sym_name => {
                 return sym.st_value as ExPtr;
             } 
             _ => ()
         };
     }
 
-    panic!("the symbol for _context could not be found");
+    panic!("the symbol for {} could not be found", sym_name);
 }
 
 const RESERVE_ADDR: ExPtr = 0x4020_0000;
@@ -116,9 +116,10 @@ pub fn load_patch(file: &Path, mut loader: Loader) -> Result<(), ()> {
     load_segments(&mapped_file, &elf, &mut loader, mem_start).unwrap();
     
     // read the starting address
-    let start_proc_offset = elf.header.e_entry as ExPtr - mem_start;
-    let context_offset = get_context_addr(&elf) - mem_start;
-    loader.initialize_patch(start_proc_offset, context_offset).unwrap();
+    let resolve = |sym_name: &str| {
+        get_addr(&elf, sym_name)
+    };
+    loader.initialize_patch(resolve).unwrap();
     
     Ok(())
 }

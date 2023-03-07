@@ -36,12 +36,18 @@ pub struct WindowsLoader {
 struct AlignedContext(WOW64_CONTEXT);
 
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct PatchContext {
     _context: u32,
     ret_addr: ExPtr,
     restore_esp: u32,
     restore_ebp: u32
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SymbolAddrList {
+    context_addr: ExPtr,
+    start_addr: ExPtr,
 }
 
 const MAX_PROCESS_FILE_NAME_LEN: usize = 1_000;
@@ -321,8 +327,7 @@ impl WindowsLoader {
         Ok(thread_handle)
     }
 
-
-    fn change_thread_state(&self, thread_handle: *mut c_void, start_addr: ExPtr, context_addr: ExPtr) -> Result<(), ()> {
+    fn change_thread_state(&self, thread_handle: *mut c_void, address_list: SymbolAddrList) -> Result<(), ()> {
         let mut context: AlignedContext = unsafe { mem::zeroed() };
         context.0.ContextFlags = WOW64_CONTEXT_FULL;
         let context_result = unsafe {
@@ -346,7 +351,7 @@ impl WindowsLoader {
         println!("return to addr: {:x}", patch_context.ret_addr);
 
         let context_buf = unsafe { mem::transmute::<PatchContext, [u8; 16]>(patch_context) };
-        self.mem_write_direct(context_addr, &context_buf)?;
+        self.mem_write_direct(address_list.context_addr, &context_buf)?;
 
         const STACK_ADDR: u32 = 0x4500_0000;
         const STACK_SIZE: u32 = 4096 * 4;
@@ -367,7 +372,7 @@ impl WindowsLoader {
         context.0.Esp = STACK_ADDR + STACK_SIZE;
 
         // change instruction it starts at
-        context.0.Eip = start_addr;
+        context.0.Eip = address_list.start_addr;
 
         let context_result = unsafe {
             winbase::Wow64SetThreadContext(thread_handle, &mut context.0)
@@ -382,15 +387,24 @@ impl WindowsLoader {
         Ok(())
     }
 
-    pub fn initialize_patch(self, start_proc_offset: ExPtr, context_offset: ExPtr) -> Result<(), ()> {
+    pub fn initialize_patch(self, resolve_offset: impl Fn(&'static str) -> ExPtr) -> Result<(), ()> {
         println!("initializing patch");
 
         let thread_handle = self.open_victim_thread()?;
         WindowsLoader::suspend_thread(thread_handle)?;
 
-        let start_addr = self.get_offset_ptr(start_proc_offset);
-        let context_addr = self.get_offset_ptr(context_offset);
-        self.change_thread_state(thread_handle, start_addr, context_addr)?;
+        println!("resolving symbols");
+
+        let resolve = |name: &'static str| -> ExPtr {
+            self.get_offset_ptr(resolve_offset(name))
+        };
+
+        let address_list = SymbolAddrList {
+            context_addr: resolve("_context"),
+            start_addr: resolve("_start"),
+        };
+
+        self.change_thread_state(thread_handle, address_list)?;
 
         WindowsLoader::resume_thread(thread_handle)?;
 

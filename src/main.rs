@@ -10,7 +10,9 @@ enum Input {
 fn main() {
     
     let input = Input::Constant;
-    let lol_path = "C:\\Riot Games\\League of Legends\\Game\\League of Legends.exe";
+
+    // "C:\\Riot Games\\League of Legends\\Game\\League of Legends.exe";
+    let lol_path = "C:\\Program Files (x86)\\Notepad++\\notepad++.exe";
 
     let loader = match input {
         Input::Pid => input_pid(),
