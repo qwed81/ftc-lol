@@ -113,12 +113,14 @@ pub fn load_patch(file: &Path, mut loader: Loader) -> Result<(), ()> {
     let total_needed = mem_end - mem_start;
     loader.reserve_mem(RESERVE_ADDR, total_needed).unwrap();
 
+    std::thread::sleep(std::time::Duration::from_millis(4000));
     load_segments(&mapped_file, &elf, &mut loader, mem_start).unwrap();
     
     // read the starting address
     let resolve = |sym_name: &str| {
         get_addr(&elf, sym_name)
     };
+
     loader.initialize_patch(resolve).unwrap();
     
     Ok(())

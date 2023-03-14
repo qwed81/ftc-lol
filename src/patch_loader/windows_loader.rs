@@ -52,7 +52,7 @@ struct SymbolAddrList {
 
 const MAX_PROCESS_FILE_NAME_LEN: usize = 1_000;
 const MAX_PROCESS_ITER: usize = 10_000;
-const PROCESS_POLL_DURATION: Duration = Duration::from_millis(200);
+const PROCESS_POLL_DURATION: Duration = Duration::from_millis(10);
 const REQUIRED_PROCESS_PERMS: u32 = PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION;
 
 impl WindowsLoader {

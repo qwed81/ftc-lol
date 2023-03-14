@@ -6,16 +6,11 @@ typedef uint16_t WCHAR;
 
 typedef void* (__stdcall *CreateFileAType)(const char*, uint32_t, uint32_t, void*, uint32_t, uint32_t, void*); 
 typedef void* (__stdcall *CreateFileWType)(const WCHAR*, uint32_t, uint32_t, void*, uint32_t, uint32_t, void*); 
+typedef uint32_t (__stdcall *ReadFileType)(void*, void*, uint32_t, uint32_t*, uint32_t*);
 
 typedef uint32_t (__stdcall *WriteFileType)(void*, const void*, uint32_t, uint32_t*, void*);
 typedef uint32_t (__stdcall *VirtualProtectType)(void*, uint32_t, uint32_t, uint32_t*);
-
-/*
-it's possible we will need a mutex in the future (in our hooks)
-typedef void* (__stdcall *CreateMutexAType)(void*, uint32_t, const char*);
-typedef uint32_t (__stdcall *WaitForSingleObjectType)(void*, uint32_t);
-typedef uint32_t (__stdcall *ReleaseMutexType)(void*);
-*/
+typedef uint32_t (__stdcall *GetLastErrorType)();
 
 extern void* kernel32_addr;
 
@@ -27,12 +22,16 @@ extern void* kernel32_addr;
 #define SYNCHRONIZE 0x00100000
 #define PAGE_EXECUTE_READ 0x20
 #define PAGE_EXECUTE_READWRITE 0x40
+#define PAGE_READWRITE 0x04
 
 #define CreateFileWAddr (kernel32_addr + 0x23810)
 #define CreateFileAAddr (kernel32_addr + 0x23800)
 #define WriteFileAddr (kernel32_addr + 0x23C80)
 #define VirtualProtectAddr (kernel32_addr + 0x20B90)
+#define GetLastErrorAddr (kernel32_addr + 0x1E640)
+#define ReadFileAddr (kernel32_addr + 0x23B90)
 
+#define pre_hook_CreateFileA ((CreateFileAType)CreateFileAAddr)
 #define WriteFile ((WriteFileType)WriteFileAddr)
 #define VirtualProtect ((VirtualProtectType)VirtualProtectAddr)
-#define pre_hook_CreateFileA ((CreateFileAType)CreateFileAAddr)
+#define GetLastError ((GetLastErrorType)GetLastErrorAddr)
