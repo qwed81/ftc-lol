@@ -24,9 +24,9 @@ use std::time::Duration;
 use std::collections::HashSet;
 use std::time::Instant;
 
-use super::{ExPtr, ExLen, MemProt};
+use super::{ExPtr, ExLen, MemProt, ElfOff};
 
-pub struct WindowsLoader {
+pub struct Loader {
     pid: u32,
     h_proc: *mut c_void,
     reserved: Option<ExPtr>,
@@ -45,9 +45,9 @@ struct PatchContext {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct SymbolAddrList {
-    context_addr: ExPtr,
-    start_addr: ExPtr,
+struct SymbolOffsetList {
+    context_addr: ElfOff,
+    start_addr: ElfOff,
 }
 
 const MAX_PROCESS_FILE_NAME_LEN: usize = 1_000;
@@ -55,9 +55,9 @@ const MAX_PROCESS_ITER: usize = 10_000;
 const PROCESS_POLL_DURATION: Duration = Duration::from_millis(10);
 const REQUIRED_PROCESS_PERMS: u32 = PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION;
 
-impl WindowsLoader {
+impl Loader {
 
-    fn get_offset_ptr(&self, offset: ExPtr) -> ExPtr {
+    fn get_offset_ptr(&self, offset: ExPtr) -> ElfOff {
         assert!(self.reserved.is_some());
         let base = self.reserved.unwrap();
         base + offset
@@ -94,7 +94,7 @@ impl WindowsLoader {
         }
     }
 
-    pub fn wait_spawn(process_file_name: &[u8], max_wait: Duration) -> Result<WindowsLoader, ()> {
+    pub fn wait_spawn(process_file_name: &[u8], max_wait: Duration) -> Result<Loader, ()> {
         let start_time = Instant::now();
 
         let mut buffer = [0; MAX_PROCESS_ITER];
@@ -124,7 +124,7 @@ impl WindowsLoader {
                     continue;
                 }
 
-                if let Some(handle) = WindowsLoader::process_is_named(pid, process_file_name) {
+                if let Some(handle) = Loader::process_is_named(pid, process_file_name) {
                     break 'outer (pid, handle);
                 }
             }
@@ -139,10 +139,10 @@ impl WindowsLoader {
             thread::sleep(PROCESS_POLL_DURATION);
         };
 
-        Ok(WindowsLoader { pid, h_proc: handle, reserved: None })
+        Ok(Loader { pid, h_proc: handle, reserved: None })
     }
 
-    pub fn from_pid(pid: u32) -> Result<WindowsLoader, ()> {
+    pub fn from_pid(pid: u32) -> Result<Loader, ()> {
         let h_proc = unsafe {
             processthreadsapi::OpenProcess(REQUIRED_PROCESS_PERMS, 0, pid)
         };
@@ -151,14 +151,16 @@ impl WindowsLoader {
             return Err(());
         }
 
-        Ok(WindowsLoader {
+        Ok(Loader {
             pid,
             h_proc,
             reserved: None 
         })
     }
 
-    pub fn reserve_mem(&mut self, reserve_addr: ExPtr, len: ExLen) -> Result<(), ()> {
+    const RESERVE_ADDR: ExPtr = 0x4020_0000;
+
+    pub fn reserve_mem(&mut self, len: ExLen) -> Result<(), ()> {
         assert!(self.reserved.is_none());
 
         println!("reserving memory, addr: {:x?} len: {}", reserve_addr, len);
@@ -166,7 +168,7 @@ impl WindowsLoader {
         // make sure that it is ok to allocate this memory, and it will not be taken up by anyone
         // else. If not all the segments map to an actual page, it is ok because it will not
         // take any physical memory
-        let reserve = reserve_addr as *mut c_void;
+        let reserve = RESERVE_ADDR as *mut c_void;
         let alloc = unsafe {
             memoryapi::VirtualAllocEx(self.h_proc, reserve,
                 len as usize, MEM_RESERVE, PAGE_NOACCESS)
@@ -188,7 +190,7 @@ impl WindowsLoader {
         Ok(())
     }
 
-    pub fn map_segment(&self, offset: ExPtr, len: ExLen) -> Result<(), ()> {
+    pub fn map_segment(&self, offset: ElfOff, len: ExLen) -> Result<(), ()> {
         let actual_addr = self.get_offset_ptr(offset) as *mut c_void;
         println!("map addr: {:x?} len: {}", actual_addr, len);
 
@@ -206,7 +208,7 @@ impl WindowsLoader {
         Ok(())
     }
 
-    pub fn mem_write(&self, offset: ExPtr, src: &[u8]) -> Result<(), ()> {
+    pub fn mem_write(&self, offset: ElfOff, src: &[u8]) -> Result<(), ()> {
         let actual_addr = self.get_offset_ptr(offset);
         self.mem_write_direct(actual_addr, src)
     }
@@ -228,7 +230,7 @@ impl WindowsLoader {
         Ok(())
     }
 
-    pub fn mem_protect(&self, offset: ExPtr, len: ExLen, prot: MemProt) -> Result<(), ()> {
+    pub(super) fn mem_protect(&self, offset: ElfOff, len: ExLen, prot: MemProt) -> Result<(), ()> {
         let actual_addr = self.get_offset_ptr(offset);
         self.mem_protect_direct(actual_addr, len, prot)
     }
@@ -327,7 +329,7 @@ impl WindowsLoader {
         Ok(thread_handle)
     }
 
-    fn change_thread_state(&self, thread_handle: *mut c_void, address_list: SymbolAddrList) -> Result<(), ()> {
+    fn change_thread_state(&self, thread_handle: *mut c_void, address_list: SymbolOffsetList) -> Result<(), ()> {
         let mut context: AlignedContext = unsafe { mem::zeroed() };
         context.0.ContextFlags = WOW64_CONTEXT_FULL;
         let context_result = unsafe {
@@ -387,116 +389,31 @@ impl WindowsLoader {
         Ok(())
     }
 
-    pub fn initialize_patch(self, resolve_offset: impl Fn(&'static str) -> ExPtr) -> Result<(), ()> {
+    pub fn initialize_patch(self, resolve_symbol_offset: impl Fn(&'static str) -> ElfOff) -> Result<(), ()> {
         println!("initializing patch");
 
         let thread_handle = self.open_victim_thread()?;
-        WindowsLoader::suspend_thread(thread_handle)?;
+        Loader::suspend_thread(thread_handle)?;
 
         println!("resolving symbols");
 
+        // get the actual pointer of a symbol
         let resolve = |name: &'static str| -> ExPtr {
-            self.get_offset_ptr(resolve_offset(name))
+            let offset = resolve_symbol_offset(name);
+            self.get_offset_ptr(offset)
         };
 
-        let address_list = SymbolAddrList {
+        let address_list = SymbolOffsetList {
             context_addr: resolve("_context"),
             start_addr: resolve("_start"),
         };
 
         self.change_thread_state(thread_handle, address_list)?;
 
-        WindowsLoader::resume_thread(thread_handle)?;
+        Loader::resume_thread(thread_handle)?;
 
         Ok(())
     }
 
 }
 
-
-   /*
-fn create_rel_jmp(instruction_pos: ExPtr, jump_to_pos: ExPtr) -> [u8; 6] {
-    let mut instruction = [0xFF, 0x25, 0, 0, 0, 0];
-
-    // calculate the jump to including the size of this instruction
-    // let rip_offset: i32 = (jump_to_pos as i64 - instruction_pos as i64 - 6).try_into().unwrap();
-    let rip_offset = -6;
-    unsafe {
-        let rest_ptr = instruction.as_mut_ptr().offset(2) as *mut i32;
-        *rest_ptr = rip_offset;
-    }
-    
-    instruction
-}
-
-fn start_remote_thread(&mut self, start_addr: ExPtr) -> Result<(), ()> {
-    println!("thread starting at addr: {:x?}", start_addr);
-    let start_fn = unsafe {
-        mem::transmute::<usize, Option<unsafe extern "system" fn (*mut c_void) -> u32>>(0x03D5_0000)
-    };
-    
-    let mut thread_id = 0;
-    const START_PAUSED: u32 = 4;
-    let thread_handle = unsafe {
-        processthreadsapi::CreateRemoteThread(self.h_proc, ptr::null_mut(), 0x2000, 
-            start_fn, ptr::null_mut(), START_PAUSED, &mut thread_id)
-    };
-
-    if thread_handle.is_null() {
-        let err = unsafe { errhandlingapi::GetLastError() }; 
-        println!("could not create thread, error is: {}", err);
-        return Err(());
-    }
-
-    println!("created thread, id is: {}", thread_id);
-
-    let mut context: AlignedContext = unsafe { mem::zeroed() };
-    context.0.ContextFlags = WOW64_CONTEXT_FULL;
-    let context_result = unsafe {
-        winbase::Wow64GetThreadContext(thread_handle, &mut context.0)
-    };
-    
-    if context_result == 0 {
-        let err = unsafe { errhandlingapi::GetLastError() };
-        println!("could not get thread context, error is: {}", err);
-        return Err(());
-    }
-
-    context.0.Eip = start_addr;
-    let context_result = unsafe {
-        winbase::Wow64SetThreadContext(thread_handle, &mut context.0)
-    };
-
-    if context_result == 0 {
-        let err = unsafe { errhandlingapi::GetLastError() };
-        println!("could not set thread context, error is: {}", err);
-        return Err(());
-    }
-
-    let resume_result = unsafe {
-        processthreadsapi::ResumeThread(thread_handle)
-    };
-
-    if resume_result == 0xFFFFFFFF {
-        let err = unsafe { errhandlingapi::GetLastError() };
-        println!("thread could not resume, error is: {}", err);
-        return Err(());
-    }  
-
-    std::thread::sleep(Duration::from_millis(1000));
-
-    let mut thread_exit_code = 0;
-    let exit_code_result = unsafe {
-        processthreadsapi::GetExitCodeThread(thread_handle, &mut thread_exit_code)
-    };
-
-    if exit_code_result == 0 {
-        let err = unsafe { errhandlingapi::GetLastError() };
-        println!("could not get exit code, error is: {}", err);
-        return Err(());
-    }
-    println!("thread exit code is: {}", thread_exit_code);
-
-    Ok(())
-}
-*/
