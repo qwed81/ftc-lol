@@ -1,8 +1,8 @@
-use super::entry_cache::EntryCache;
+use super::mod_fs::{self, EntryCache, ModDir};
 use super::stream_util;
 use super::{
     ConnectionHeader, ExtendedModEntry, ModEntry, ModEntryState, ServerStateUpdateMessage,
-    ServerStateUpdateRequest
+    ServerStateUpdateRequest,
 };
 use std::collections::HashMap;
 use std::sync::{
@@ -10,6 +10,7 @@ use std::sync::{
     Arc, RwLock,
 };
 use std::time::Duration;
+use tokio::fs::File;
 use tokio::io;
 use tokio::net::{
     tcp::{OwnedReadHalf, OwnedWriteHalf},
@@ -18,6 +19,7 @@ use tokio::net::{
 use tokio::time;
 
 struct SharedEntries {
+    dir: Arc<ModDir>,
     cache: Arc<RwLock<EntryCache>>,
     state_map: Arc<RwLock<HashMap<String, ModEntryState>>>,
     state_map_version: Arc<AtomicU64>,
@@ -26,6 +28,7 @@ struct SharedEntries {
 impl Clone for SharedEntries {
     fn clone(&self) -> SharedEntries {
         SharedEntries {
+            dir: Arc::clone(&self.dir),
             cache: Arc::clone(&self.cache),
             state_map: Arc::clone(&self.state_map),
             state_map_version: Arc::clone(&self.state_map_version),
@@ -33,11 +36,12 @@ impl Clone for SharedEntries {
     }
 }
 
-pub async fn listen_for_connections(cache: EntryCache) -> io::Result<()> {
+pub async fn listen_for_connections(cache: EntryCache, dir: ModDir) -> io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:5001").await?;
 
     // maps the hash to their ModEntryState
     let shared_entries = SharedEntries {
+        dir: Arc::new(dir),
         cache: Arc::new(RwLock::new(cache)),
         state_map: Arc::new(RwLock::new(HashMap::new())),
         state_map_version: Arc::new(AtomicU64::new(0)),
@@ -62,7 +66,7 @@ async fn handle_connection(mut stream: TcpStream, entries: SharedEntries) {
             handle_send_updates(writer, entries).await;
         }
         ConnectionHeader::Download => handle_download().await,
-        ConnectionHeader::Upload => handle_upload().await,
+        ConnectionHeader::Upload => handle_upload(stream, entries).await,
     }
 }
 
@@ -70,13 +74,13 @@ async fn handle_requests(mut reader: OwnedReadHalf, shared_entries: SharedEntrie
     loop {
         let message: ServerStateUpdateRequest = match stream_util::read_message(&mut reader).await {
             Ok(message) => message,
-            Err(_) => break
+            Err(_) => break,
         };
 
         let mut state_map = shared_entries.state_map.write().unwrap();
         match state_map.get_mut(&message.entry.hash) {
             Some(state_ref) => *state_ref = message.requested_state,
-            None => continue
+            None => continue,
         }
     }
 }
@@ -89,7 +93,7 @@ fn map_entries<'a>(
         entry: ModEntry {
             hash: entry.hash.clone(),
             name: entry.name.clone(),
-            file_size: entry.file_size,
+            file_len: entry.file_len,
         },
         state: *state_map.get(&entry.hash).unwrap(),
     })
@@ -129,6 +133,40 @@ async fn handle_send_updates(mut writer: OwnedWriteHalf, shared_entries: SharedE
     }
 }
 
-async fn handle_upload() {}
+async fn handle_upload(mut stream: TcpStream, shared_entries: SharedEntries) {
+    let uploads: Vec<ModEntry> = match stream_util::read_message(&mut stream).await {
+        Ok(uploads) => uploads,
+        Err(_) => return,
+    };
+    let dir = &shared_entries.dir;
+
+    for upload in uploads {
+        let entry_path = shared_entries.dir.create_entry_path(&upload.hash);
+        let entry_file = match File::create(&entry_path).await {
+            Ok(file) => file,
+            Err(_) => return,
+        };
+
+        let result = stream_util::copy_stream_and_verify_hash(
+            &mut stream,
+            entry_file,
+            upload.file_len,
+            &upload.hash,
+        );
+        match result.await {
+            Ok(_) => (),
+            Err(_) => return,
+        }
+
+        let meta_path = shared_entries.dir.create_meta_path(&upload.hash);
+        match mod_fs::write_metadata(&dir, &upload).await {
+            Ok(_) => (),
+            Err(_) => return,
+        }
+
+        let lock = mod_fs::verify_can_add_entry(&dir, upload).await.unwrap();
+        shared_entries.cache.write().unwrap().add_entry(lock);
+    }
+}
 
 async fn handle_download() {}

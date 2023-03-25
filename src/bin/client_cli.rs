@@ -1,8 +1,8 @@
-use skins::repository::client::{self, RequestSender, StateUpdate, UpdateReceiver};
+use skins::repository::client::{self, FileUpdate, RequestSender, StateUpdate, UpdateReceiver};
 use skins::repository::entry_cache::{self, EntryCache};
 use skins::repository::{stream_util, ExtendedModEntry, ModEntry, ModEntryState};
-use std::sync::{Arc, Mutex};
 use std::io::Write;
+use std::sync::{Arc, Mutex, RwLock};
 use tokio::fs::File;
 use tokio::io::{self, AsyncBufReadExt, AsyncSeekExt, BufReader, SeekFrom};
 
@@ -11,9 +11,11 @@ struct ServerRepositoryState {
     connected: bool,
 }
 
+const IP: &'static str = "127.0.0.1:5001";
+
 #[tokio::main]
 async fn main() {
-    let ip = "127.0.0.1:5001";
+    let ip = IP;
     let (mut request_sender, update_receiver) = client::connect(ip)
         .await
         .expect("could not connect to server");
@@ -23,7 +25,7 @@ async fn main() {
         connected: true,
     }));
 
-    let mut cache = EntryCache::from_dir("_test_client").await.unwrap();
+    let mut cache = EntryCache::from_dir("_test/client").await.unwrap();
     tokio::spawn(handle_updates(Arc::clone(&server_state), update_receiver));
     let mut stdin = BufReader::new(io::stdin());
 
@@ -62,14 +64,14 @@ enum MatchPrefix {
     Match(ModEntry),
 }
 
-fn match_hash_prefix<'a>(
+fn match_hash_prefix(
     prefix: &str,
-    iter: impl Iterator<Item = &'a ExtendedModEntry> + 'a,
+    iter: impl Iterator<Item = impl AsRef<ModEntry>>,
 ) -> MatchPrefix {
     let mut total_matches = 0;
     let mut last_matched = None;
     for entry in iter {
-        if prefix == &entry.entry.hash[0..prefix.len()] {
+        if prefix == &entry.as_ref().hash[0..prefix.len()] {
             total_matches += 1;
             last_matched = Some(entry);
         }
@@ -78,11 +80,11 @@ fn match_hash_prefix<'a>(
     match total_matches {
         0 => MatchPrefix::NoMatches,
         1 => {
-            let matched = &last_matched.unwrap().entry;
+            let matched = last_matched.unwrap().as_ref();
             MatchPrefix::Match(ModEntry {
                 hash: matched.hash.to_owned(),
                 name: matched.name.to_owned(),
-                file_size: matched.file_size,
+                file_len: matched.file_len,
             })
         }
         count => MatchPrefix::MultipleMatches(count),
@@ -97,7 +99,6 @@ async fn handle_updates(
         let update = update_receiver.next().await;
         match update {
             StateUpdate::Connected => (),
-
             StateUpdate::StateUpdate(mods) => state.lock().unwrap().entries = mods,
             StateUpdate::Disconnected => {
                 println!("Disconnected");
@@ -109,9 +110,9 @@ async fn handle_updates(
 }
 
 fn print_entry(entry: &ModEntry, state: Option<ModEntryState>) {
-    println!("Name: {}", &entry.hash);
-    println!("Hash: {}", &entry.name);
-    println!("File size: {}", &entry.file_size);
+    println!("  Name: {}", &entry.name);
+    println!("  Hash: {}", &entry.hash);
+    println!("  File len: {} bytes", &entry.file_size);
     if let Some(state) = state {
         let state_str = match state {
             ModEntryState::Active => "active",
@@ -119,6 +120,8 @@ fn print_entry(entry: &ModEntry, state: Option<ModEntryState>) {
         };
         println!("State: {}", state_str);
     }
+
+    println!();
 }
 
 async fn import(args: &Vec<&str>, cache: &mut EntryCache) {
@@ -158,7 +161,7 @@ async fn import(args: &Vec<&str>, cache: &mut EntryCache) {
     let entry = ModEntry {
         hash,
         name,
-        file_size: file_len,
+        file_len
     };
     entry_cache::write_metadata(&meta_path, &entry)
         .await
@@ -183,9 +186,57 @@ fn list_local(_args: &Vec<&str>, cache: &EntryCache) {
     }
 }
 
+fn get_entries_from_hash_list(hashes: &[&str], cache: &EntryCache) -> Option<Vec<ModEntry>> {
+    let mut entries = Vec::new();
+    for &prefix in hashes {
+        match match_hash_prefix(prefix, cache.entries()) {
+            MatchPrefix::NoMatches => {
+                println!("Hash {} does not prefix any local mods", prefix);
+                return None;
+            }
+            MatchPrefix::MultipleMatches(amt) => {
+                println!("Hash {} matches multiple ({}) local mods", prefix, amt);
+                return None;
+            }
+            MatchPrefix::Match(entry) => entries.push(entry),
+        }
+    }
+    Some(entries)
+}
+
 fn download(args: &Vec<&str>) {}
 
-fn upload(args: &Vec<&str>) {}
+async fn upload(args: &Vec<&str>, cache: Arc<RwLock<EntryCache>>) {
+    let entries = match get_entries_from_hash_list(&args[1..], &cache.read().unwrap()) {
+        Some(entries) => entries,
+        None => return,
+    };
+
+    let mut update_reciever = match client::upload(IP, cache, entries).await {
+        Ok(updater) => updater,
+        Err(e) => {
+            println!("Could not start upload, error: {}", e);
+            return;
+        }
+    };
+
+    loop {
+        match update_reciever.next().await {
+            FileUpdate::Started => {
+                println!("Started upload");
+            }
+            FileUpdate::Disconnected(Ok(_)) => {
+                println!("Upload completed");
+                break;
+            }
+            FileUpdate::Disconnected(Err(e)) => {
+                println!("Upload failed with error: {}", e);
+                break;
+            }
+            _ => println!("Other update"),
+        }
+    }
+}
 
 async fn set(
     args: &Vec<&str>,
