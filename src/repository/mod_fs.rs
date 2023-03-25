@@ -13,7 +13,7 @@ pub struct ModDir {
 }
 
 impl ModDir {
-    fn new(root_path: impl AsRef<Path>) -> ModDir {
+    pub fn new(root_path: impl AsRef<Path>) -> ModDir {
         let root_path = PathBuf::from(root_path.as_ref());
         let mut meta_path = root_path.clone();
         let mut entry_path = root_path.clone();
@@ -36,15 +36,13 @@ impl ModDir {
     }
 
     pub fn create_meta_path(&self, hash: &str) -> PathBuf {
-        let mut path = self.root_path.clone();
-        path.push("meta");
+        let mut path = self.meta_path.clone();
         path.push(hash);
         path
     }
 
     pub fn create_entry_path(&self, hash: &str) -> PathBuf {
-        let mut path = self.root_path.clone();
-        path.push("mods");
+        let mut path = self.entry_path.clone();
         path.push(hash);
         path
     }
@@ -157,11 +155,8 @@ pub async fn verify_can_add_entry(
 pub async fn write_metadata(dir: &ModDir, entry: &ModEntry) -> io::Result<()> {
     let meta_path = dir.create_meta_path(&entry.hash);
     let meta_file = fs::File::create(meta_path).await?;
-    match stream_util::write_message(meta_file, &entry).await {
-        Ok(_) => (),
-        Err(MessageError::IO(e)) => return Err(e),
-        Err(MessageError::Format) => panic!("Invalid format when writing entry"),
-    };
+    stream_util::write_message(meta_file, &entry).await?;
+
     Ok(())
 }
 

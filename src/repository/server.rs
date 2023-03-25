@@ -141,6 +141,8 @@ async fn handle_upload(mut stream: TcpStream, shared_entries: SharedEntries) {
     let dir = &shared_entries.dir;
 
     for upload in uploads {
+        println!("Getting new file, {} ({})", &upload.name, &upload.hash);
+
         let entry_path = shared_entries.dir.create_entry_path(&upload.hash);
         let entry_file = match File::create(&entry_path).await {
             Ok(file) => file,
@@ -158,7 +160,6 @@ async fn handle_upload(mut stream: TcpStream, shared_entries: SharedEntries) {
             Err(_) => return,
         }
 
-        let meta_path = shared_entries.dir.create_meta_path(&upload.hash);
         match mod_fs::write_metadata(&dir, &upload).await {
             Ok(_) => (),
             Err(_) => return,
@@ -166,6 +167,7 @@ async fn handle_upload(mut stream: TcpStream, shared_entries: SharedEntries) {
 
         let lock = mod_fs::verify_can_add_entry(&dir, upload).await.unwrap();
         shared_entries.cache.write().unwrap().add_entry(lock);
+        println!("File uploaded successfully");
     }
 }
 

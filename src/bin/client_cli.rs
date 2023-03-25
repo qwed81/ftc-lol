@@ -1,10 +1,10 @@
-use skins::repository::client::{self, FileUpdate, RequestSender, StateUpdate, UpdateReceiver};
-use skins::repository::entry_cache::{self, EntryCache};
-use skins::repository::{stream_util, ExtendedModEntry, ModEntry, ModEntryState};
+use skins::repository::client::{self, RequestSender, StateUpdate, UpdateReceiver};
+use skins::repository::mod_fs::{self, EntryCache, ModDir};
+use skins::repository::{ExtendedModEntry, ModEntry, ModEntryState};
+use std::path::Path;
 use std::io::Write;
-use std::sync::{Arc, Mutex, RwLock};
-use tokio::fs::File;
-use tokio::io::{self, AsyncBufReadExt, AsyncSeekExt, BufReader, SeekFrom};
+use std::sync::{Arc, Mutex};
+use tokio::io::{self, AsyncBufReadExt, BufReader};
 
 struct ServerRepositoryState {
     entries: Vec<ExtendedModEntry>,
@@ -25,7 +25,9 @@ async fn main() {
         connected: true,
     }));
 
-    let mut cache = EntryCache::from_dir("_test/client").await.unwrap();
+    let dir = ModDir::new("_test/client");
+    let mut cache = EntryCache::load_from_dir(&dir).await.unwrap();
+
     tokio::spawn(handle_updates(Arc::clone(&server_state), update_receiver));
     let mut stdin = BufReader::new(io::stdin());
 
@@ -44,15 +46,15 @@ async fn main() {
             "exit" => return,
             "help" => print_help(),
             "download" => download(&input),
-            "upload" => upload(&input),
+            "upload" => upload(&input, &dir, &cache).await,
             "set" => set(&input, &mut request_sender, &server_state).await,
             "remote" => list_remote(&input, &server_state),
             "local" => list_local(&input, &cache),
-            "import" => import(&input, &mut cache).await,
+            "import" => import(&input, &dir, &mut cache).await,
             _ => {
                 println!("invalid command");
             }
-        }
+        };
 
         buf.clear();
     }
@@ -80,7 +82,7 @@ fn match_hash_prefix(
     match total_matches {
         0 => MatchPrefix::NoMatches,
         1 => {
-            let matched = last_matched.unwrap().as_ref();
+            let matched = last_matched.as_ref().unwrap().as_ref();
             MatchPrefix::Match(ModEntry {
                 hash: matched.hash.to_owned(),
                 name: matched.name.to_owned(),
@@ -93,7 +95,7 @@ fn match_hash_prefix(
 
 async fn handle_updates(
     state: Arc<Mutex<ServerRepositoryState>>,
-    mut update_receiver: UpdateReceiver<StateUpdate>,
+    mut update_receiver: UpdateReceiver,
 ) {
     loop {
         let update = update_receiver.next().await;
@@ -112,7 +114,7 @@ async fn handle_updates(
 fn print_entry(entry: &ModEntry, state: Option<ModEntryState>) {
     println!("  Name: {}", &entry.name);
     println!("  Hash: {}", &entry.hash);
-    println!("  File len: {} bytes", &entry.file_size);
+    println!("  File len: {} bytes", &entry.file_len);
     if let Some(state) = state {
         let state_str = match state {
             ModEntryState::Active => "active",
@@ -124,52 +126,22 @@ fn print_entry(entry: &ModEntry, state: Option<ModEntryState>) {
     println!();
 }
 
-async fn import(args: &Vec<&str>, cache: &mut EntryCache) {
+async fn import(args: &Vec<&str>, dir: &ModDir, cache: &mut EntryCache) {
     if args.len() != 3 {
         println!("Import requires 3 arguments");
         return;
     }
 
     let name = String::from(args[1]);
-    let path = args[2];
-    let mut file = match File::open(path).await {
-        Ok(file) => file,
-        Err(_) => {
-            println!("Could not open file");
+    let path = Path::new(args[2]);
+    let lock = match mod_fs::import_external_entry(dir, path, name).await {
+        Ok(lock) => lock,
+        Err(e) => {
+            println!("Could not import mod, error: {:?}", e);
             return;
         }
     };
-
-    let file_len = file.metadata().await.unwrap().len();
-    let hash = stream_util::hash_full_stream(&mut file).await.unwrap();
-    file.seek(SeekFrom::Start(0)).await.unwrap();
-
-    let new_path = cache.create_entry_path(&hash);
-    let mut new_file = match File::create(&new_path).await {
-        Ok(file) => file,
-        Err(_) => {
-            println!("Could not create new file");
-            return;
-        }
-    };
-
-    stream_util::copy_stream_and_verify_hash(&mut file, &mut new_file, file_len, &hash)
-        .await
-        .unwrap();
-
-    let meta_path = cache.create_meta_path(&hash);
-    let entry = ModEntry {
-        hash,
-        name,
-        file_len
-    };
-    entry_cache::write_metadata(&meta_path, &entry)
-        .await
-        .unwrap();
-    entry_cache::verify_can_add_entry(&meta_path, &new_path)
-        .await
-        .unwrap();
-    cache.add_entry(entry);
+    cache.add_entry(lock);
 }
 
 fn list_remote(_args: &Vec<&str>, server_state: &Arc<Mutex<ServerRepositoryState>>) {
@@ -206,13 +178,13 @@ fn get_entries_from_hash_list(hashes: &[&str], cache: &EntryCache) -> Option<Vec
 
 fn download(args: &Vec<&str>) {}
 
-async fn upload(args: &Vec<&str>, cache: Arc<RwLock<EntryCache>>) {
-    let entries = match get_entries_from_hash_list(&args[1..], &cache.read().unwrap()) {
+async fn upload(args: &Vec<&str>, dir: &ModDir, cache: &EntryCache) {
+    let entries = match get_entries_from_hash_list(&args[1..], &cache) {
         Some(entries) => entries,
         None => return,
     };
 
-    let mut update_reciever = match client::upload(IP, cache, entries).await {
+    let mut upload = match client::upload(IP, dir, entries).await {
         Ok(updater) => updater,
         Err(e) => {
             println!("Could not start upload, error: {}", e);
@@ -220,20 +192,11 @@ async fn upload(args: &Vec<&str>, cache: Arc<RwLock<EntryCache>>) {
         }
     };
 
-    loop {
-        match update_reciever.next().await {
-            FileUpdate::Started => {
-                println!("Started upload");
-            }
-            FileUpdate::Disconnected(Ok(_)) => {
-                println!("Upload completed");
-                break;
-            }
-            FileUpdate::Disconnected(Err(e)) => {
-                println!("Upload failed with error: {}", e);
-                break;
-            }
-            _ => println!("Other update"),
+    while let Some(entry) = upload.peek_next() {
+        println!("Uploading {} ({})", &entry.name, &entry.hash);
+        match upload.upload_next().await {
+            Ok(_) => println!("Upload completed"),
+            Err(e) => println!("Upload failed with error: {:?}", e)
         }
     }
 }

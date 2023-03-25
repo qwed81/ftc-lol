@@ -54,12 +54,8 @@ pub async fn read_message<R: AsyncRead + Unpin, T: Debug + DeserializeOwned>(
 pub async fn write_message<W: AsyncWrite + Unpin, T: Debug + Serialize>(
     mut writer: W,
     message: &T,
-) -> Result<(), MessageError> {
-    let mut vec = match serde_json::to_vec(message) {
-        Ok(vec) => vec,
-        Err(_) => return Err(MessageError::Format),
-    };
-
+) -> io::Result<()> {
+    let mut vec = serde_json::to_vec(message).unwrap();
     let len: u64 = vec.len().try_into().unwrap();
     // get the length as a little endian byte array
     let len_bytes = len.to_le_bytes();

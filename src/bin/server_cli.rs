@@ -1,10 +1,12 @@
-use skins::repository::entry_cache::EntryCache;
+use skins::repository::mod_fs::{ModDir, EntryCache};
 use skins::repository::server;
 
 #[tokio::main]
 async fn main() {
     println!("initializing cache");
-    let cache = EntryCache::from_dir("_test/server").await.unwrap();
+    let dir = ModDir::new("_test/server");
+    let cache = EntryCache::load_from_dir(&dir).await.unwrap();
+
     println!("waiting for connections");
-    server::listen_for_connections(cache).await.unwrap();
+    server::listen_for_connections(cache, dir).await.unwrap();
 }

@@ -1,5 +1,5 @@
-use super::mod_fs::EntryCache;
-use super::stream_util::{self, FileTransferError, MessageError};
+use super::mod_fs::ModDir;
+use super::stream_util::{self, FileTransferError};
 use super::{
     ConnectionHeader, ExtendedModEntry, ModEntry, ModEntryState, ServerStateUpdateMessage,
     ServerStateUpdateRequest,
@@ -7,7 +7,7 @@ use super::{
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, RwLock,
+    Arc,
 };
 use tokio::fs::File;
 use tokio::io;
@@ -40,19 +40,14 @@ impl RequestSender {
     pub async fn request_set_mod_state(
         &mut self,
         entry: ModEntry,
-        requested_state: ModEntryState,
+        new_state: ModEntryState,
     ) -> io::Result<()> {
         let request = ServerStateUpdateRequest {
             entry,
-            requested_state,
+            requested_state: new_state,
         };
-        match stream_util::write_message(&mut self.writer, &request).await {
-            Ok(_) => Ok(()),
-            Err(e) => match e {
-                MessageError::Format => panic!("format is wrong while writing message"),
-                MessageError::IO(e) => return Err(e),
-            },
-        }
+
+        stream_util::write_message(&mut self.writer, &request).await
     }
 
     pub fn notify_should_close(&mut self) {
@@ -67,9 +62,7 @@ pub enum StateUpdate {
     Disconnected,
 }
 
-pub async fn connect(
-    ip_addr: impl ToSocketAddrs,
-) -> io::Result<(RequestSender, UpdateReceiver)> {
+pub async fn connect(ip_addr: impl ToSocketAddrs) -> io::Result<(RequestSender, UpdateReceiver)> {
     let stream = TcpStream::connect(ip_addr).await?;
     let (mut reader, mut writer) = stream.into_split();
     let should_close = Arc::new(AtomicBool::new(false));
@@ -77,21 +70,17 @@ pub async fn connect(
     let (tx, rx) = mpsc::channel(100);
 
     let header = ConnectionHeader::Subscribe;
-    if let Err(e) = stream_util::write_message(&mut writer, &header).await {
-        match e {
-            MessageError::Format => panic!(""),
-            MessageError::IO(e) => return Err(e),
-        }
-    }
+    stream_util::write_message(&mut writer, &header).await?;
 
     tokio::spawn(async move {
         tx.send(StateUpdate::Connected).await.unwrap();
         while should_close_clone.load(Ordering::Relaxed) == false {
-            let message: ServerStateUpdateMessage =
-                match stream_util::read_message(&mut reader).await {
-                    Ok(message) => message,
-                    Err(_) => break,
-                };
+            let message: ServerStateUpdateMessage;
+            message = match stream_util::read_message(&mut reader).await {
+                Ok(message) => message,
+                Err(_) => break,
+            };
+
             tx.send(StateUpdate::StateUpdate(message.server_mods))
                 .await
                 .unwrap();
@@ -116,7 +105,7 @@ pub enum FileUpdate {
     FileStarted { id: u64, entry: ModEntry },
     FileUpdated { id: u64, progress: u32 },
     FileFinished { id: u64 },
-    Disconnected (io::Result<()>),
+    Disconnected(io::Result<()>),
 }
 
 /*
@@ -133,60 +122,59 @@ pub async fn download(ip_addr: impl ToSocketAddrs) -> io::Result<UpdateReceiver<
 }
 */
 
-pub async fn upload(
+pub struct FileUpload<'a> {
+    stream: TcpStream,
+    uploads: Vec<ModEntry>,
+    upload_index: usize,
+    mod_dir: &'a ModDir,
+}
+
+impl<'a> FileUpload<'a> {
+    pub fn peek_next(&self) -> Option<&ModEntry> {
+        if self.upload_index < self.uploads.len() {
+            Some(&self.uploads[self.upload_index])
+        } else {
+            None
+        }
+    }
+
+    pub async fn upload_next(&mut self) -> io::Result<()> {
+        if self.upload_index >= self.uploads.len() {
+            panic!("Called upload next when there were no more to upload");
+        }
+
+        let hash = &self.uploads[self.upload_index].hash;
+        let file_len = self.uploads[self.upload_index].file_len;
+        let entry_path = self.mod_dir.create_entry_path(hash);
+        let file = File::open(&entry_path).await?;
+
+        let copy_result =
+            stream_util::copy_stream_and_verify_hash(file, &mut self.stream, file_len, hash).await;
+        match copy_result {
+            Ok(_) => (),
+            Err(FileTransferError::InvalidHash) => panic!("File hash does not match metadata"),
+            Err(FileTransferError::IO(e)) => return Err(e),
+        }
+
+        self.upload_index += 1;
+        Ok(())
+    }
+}
+
+pub async fn upload<'a>(
     ip_addr: impl ToSocketAddrs,
-    entry_cache: Arc<RwLock<EntryCache>>,
-    entries: Vec<ModEntry>,
-) -> io::Result<UpdateReceiver<FileUpdate>> {
+    mod_dir: &'a ModDir,
+    uploads: Vec<ModEntry>
+) -> io::Result<FileUpload<'a>> {
     let mut stream = TcpStream::connect(ip_addr).await?;
-    let should_close = Arc::new(AtomicBool::new(false));
-    let should_close_clone = Arc::clone(&should_close);
-    let (tx, rx) = mpsc::channel(100);
-
     let header = ConnectionHeader::Download;
-    match stream_util::write_message(&mut stream, &header).await {
-        Ok(_) => (),
-        Err(MessageError::Format) => panic!("Could not format connection header"),
-        Err(MessageError::IO(e)) => return Err(e),
-    }
+    stream_util::write_message(&mut stream, &header).await?;
+    stream_util::write_message(&mut stream, &uploads).await?;
 
-    match stream_util::write_message(&mut stream, &entries).await {
-        Ok(_) => (),
-        Err(MessageError::Format) => panic!("Could not format request"),
-        Err(MessageError::IO(e)) => return Err(e),
-    }
-
-    tokio::spawn(async move {
-        if let Err(_) = tx.send(FileUpdate::Started).await {
-            return;
-        }
-
-        let mut i = 0;
-        while should_close.load(Ordering::Relaxed) == false {
-            let hash = &entries[i].hash;
-            let file_len = entries[i].file_len;
-
-            let entry_path = entry_cache.read().unwrap().create_entry_path(hash);
-            let file = match File::open(&entry_path).await {
-                Ok(file) => file,
-                Err(_) => break,
-            };
-
-            match stream_util::copy_stream_and_verify_hash(file, &mut stream, file_len, hash).await
-            {
-                Ok(_) => (),
-                Err(FileTransferError::InvalidHash) => panic!("File hash does not match metadata"),
-                Err(FileTransferError::IO(_)) => break,
-            }
-
-            i += 1;
-        }
-
-        _ = tx.send(FileUpdate::Disconnected(Ok(()))).await;
-    });
-
-    Ok(UpdateReceiver {
-        rx,
-        should_close: should_close_clone,
+    Ok(FileUpload {
+        uploads,
+        upload_index: 0,
+        mod_dir,
+        stream,
     })
 }
