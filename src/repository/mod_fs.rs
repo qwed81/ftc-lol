@@ -27,6 +27,10 @@ impl ModDir {
         }
     }
 
+    pub fn get_root(&self) -> &Path {
+        &self.root_path
+    }
+
     pub fn get_meta_root(&self) -> &Path {
         &self.meta_path
     }

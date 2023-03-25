@@ -1,10 +1,11 @@
 use skins::repository::client::{self, RequestSender, StateUpdate, UpdateReceiver};
 use skins::repository::mod_fs::{self, EntryCache, ModDir};
 use skins::repository::{ExtendedModEntry, ModEntry, ModEntryState};
-use std::path::Path;
 use std::io::Write;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::io::{self, AsyncBufReadExt, BufReader};
+use std::env;
 
 struct ServerRepositoryState {
     entries: Vec<ExtendedModEntry>,
@@ -15,6 +16,13 @@ const IP: &'static str = "127.0.0.1:5001";
 
 #[tokio::main]
 async fn main() {
+    let args: Vec<String> = env::args().collect();
+    let dir = if args.len() > 1 {
+        &args[1]
+    } else {
+        "_test/client"
+    };
+
     let ip = IP;
     let (mut request_sender, update_receiver) = client::connect(ip)
         .await
@@ -25,7 +33,7 @@ async fn main() {
         connected: true,
     }));
 
-    let dir = ModDir::new("_test/client");
+    let dir = ModDir::new(dir);
     let mut cache = EntryCache::load_from_dir(&dir).await.unwrap();
 
     tokio::spawn(handle_updates(Arc::clone(&server_state), update_receiver));
@@ -45,8 +53,8 @@ async fn main() {
         match input[0] {
             "exit" => return,
             "help" => print_help(),
-            "download" => download(&input),
-            "upload" => upload(&input, &dir, &cache).await,
+            "download" => download(&input, &dir, &mut cache, &server_state).await,
+            "upload" => upload(&input, &dir, &cache, &server_state).await,
             "set" => set(&input, &mut request_sender, &server_state).await,
             "remote" => list_remote(&input, &server_state),
             "local" => list_local(&input, &cache),
@@ -59,40 +67,6 @@ async fn main() {
         buf.clear();
     }
 }
-
-enum MatchPrefix {
-    NoMatches,
-    MultipleMatches(usize),
-    Match(ModEntry),
-}
-
-fn match_hash_prefix(
-    prefix: &str,
-    iter: impl Iterator<Item = impl AsRef<ModEntry>>,
-) -> MatchPrefix {
-    let mut total_matches = 0;
-    let mut last_matched = None;
-    for entry in iter {
-        if prefix == &entry.as_ref().hash[0..prefix.len()] {
-            total_matches += 1;
-            last_matched = Some(entry);
-        }
-    }
-
-    match total_matches {
-        0 => MatchPrefix::NoMatches,
-        1 => {
-            let matched = last_matched.as_ref().unwrap().as_ref();
-            MatchPrefix::Match(ModEntry {
-                hash: matched.hash.to_owned(),
-                name: matched.name.to_owned(),
-                file_len: matched.file_len,
-            })
-        }
-        count => MatchPrefix::MultipleMatches(count),
-    }
-}
-
 async fn handle_updates(
     state: Arc<Mutex<ServerRepositoryState>>,
     mut update_receiver: UpdateReceiver,
@@ -117,10 +91,10 @@ fn print_entry(entry: &ModEntry, state: Option<ModEntryState>) {
     println!("  File len: {} bytes", &entry.file_len);
     if let Some(state) = state {
         let state_str = match state {
-            ModEntryState::Active => "active",
-            ModEntryState::InActive => "inactive",
+            ModEntryState::Active => "Active",
+            ModEntryState::InActive => "Inactive",
         };
-        println!("State: {}", state_str);
+        println!("  State: {}", state_str);
     }
 
     println!();
@@ -146,45 +120,161 @@ async fn import(args: &Vec<&str>, dir: &ModDir, cache: &mut EntryCache) {
 
 fn list_remote(_args: &Vec<&str>, server_state: &Arc<Mutex<ServerRepositoryState>>) {
     println!("Remote mods are: ");
+    let mut has_one = false;
     for extended_entry in &server_state.lock().unwrap().entries {
         print_entry(&extended_entry.entry, Some(extended_entry.state));
+        has_one = true;
+    }
+
+    if has_one == false {
+        println!();
     }
 }
 
 fn list_local(_args: &Vec<&str>, cache: &EntryCache) {
     println!("Local mods are: ");
+    let mut has_one = false;
     for entry in cache.entries() {
         print_entry(entry, None);
+        has_one = true;
+    }
+
+    if has_one == false {
+        println!();
     }
 }
 
-fn get_entries_from_hash_list(hashes: &[&str], cache: &EntryCache) -> Option<Vec<ModEntry>> {
-    let mut entries = Vec::new();
-    for &prefix in hashes {
-        match match_hash_prefix(prefix, cache.entries()) {
+enum MatchPrefix {
+    NoMatches,
+    MultipleMatches(usize),
+    Match(ModEntry),
+}
+
+fn match_hash_prefix(prefix: &str, iter: &Vec<impl AsRef<ModEntry>>) -> MatchPrefix {
+    let mut total_matches = 0;
+    let mut last_matched = None;
+    for entry in iter {
+        if prefix == &entry.as_ref().hash[0..prefix.len()] {
+            total_matches += 1;
+            last_matched = Some(entry);
+        }
+    }
+
+    match total_matches {
+        0 => MatchPrefix::NoMatches,
+        1 => {
+            let matched = last_matched.as_ref().unwrap().as_ref();
+            MatchPrefix::Match(ModEntry {
+                hash: matched.hash.to_owned(),
+                name: matched.name.to_owned(),
+                file_len: matched.file_len,
+            })
+        }
+        count => MatchPrefix::MultipleMatches(count),
+    }
+}
+
+fn get_intersection_from_prefix_list(
+    hash_prefixes: &[&str],
+    entries: &Vec<impl AsRef<ModEntry>>,
+) -> Option<Vec<ModEntry>> {
+    let mut output = Vec::new();
+    for &prefix in hash_prefixes {
+        match match_hash_prefix(prefix, &entries) {
             MatchPrefix::NoMatches => {
                 println!("Hash {} does not prefix any local mods", prefix);
                 return None;
             }
             MatchPrefix::MultipleMatches(amt) => {
-                println!("Hash {} matches multiple ({}) local mods", prefix, amt);
+                println!("Hash {} matches multiple ({}) local mods, lengthen the input to select the correct file", prefix, amt);
                 return None;
             }
-            MatchPrefix::Match(entry) => entries.push(entry),
+            MatchPrefix::Match(entry) => output.push(entry),
         }
     }
-    Some(entries)
+    Some(output)
 }
 
-fn download(args: &Vec<&str>) {}
+async fn download(
+    args: &Vec<&str>,
+    dir: &ModDir,
+    cache: &mut EntryCache,
+    server_state: &Arc<Mutex<ServerRepositoryState>>,
+) {
+    let entries = server_state.lock().unwrap().entries.clone();
+    let hash_prefixes = &args[1..];
+    let mut downloads = match get_intersection_from_prefix_list(hash_prefixes, &entries) {
+        Some(downloads) => downloads,
+        None => return,
+    };
 
-async fn upload(args: &Vec<&str>, dir: &ModDir, cache: &EntryCache) {
-    let entries = match get_entries_from_hash_list(&args[1..], &cache) {
+    // if we already have the mod, then there is no point in trying to download it
+    for entry in cache.entries() {
+        for i in (0..downloads.len()).rev() {
+            if &downloads[i].hash == &entry.hash {
+                let e = &downloads[i];
+                println!("Already have mod: {} ({})", &e.name, &e.hash);
+                downloads.swap_remove(i);
+            }
+        }
+    }
+    if downloads.len() == 0 {
+        return;
+    }
+
+    let mut download = match client::download(IP, dir, downloads).await {
+        Ok(download) => download,
+        Err(e) => {
+            println!("Could not start download, error: {}", e);
+            return;
+        }
+    };
+
+    while let Some(entry) = download.peek_next() {
+        println!("Downloading: {} ({})", &entry.name, &entry.hash);
+        let lock = match download.download_next().await {
+            Ok(lock) => {
+                println!("Download completed");
+                lock
+            }
+            Err(e) => {
+                println!("Download failed with error: {:?}", e);
+                break;
+            }
+        };
+
+        cache.add_entry(lock);
+    }
+}
+
+async fn upload(
+    args: &Vec<&str>,
+    dir: &ModDir,
+    cache: &EntryCache,
+    server_state: &Arc<Mutex<ServerRepositoryState>>,
+) {
+    let entries = cache.entries().collect();
+    let hash_prefixes = &args[1..];
+    let mut uploads = match get_intersection_from_prefix_list(hash_prefixes, &entries) {
         Some(entries) => entries,
         None => return,
     };
 
-    let mut upload = match client::upload(IP, dir, entries).await {
+    // don't try to upload if it is already on the server
+    for entry in &server_state.lock().unwrap().entries {
+        for i in (0..uploads.len()).rev() {
+            if &uploads[i].hash == &entry.entry.hash {
+                let e = &uploads[i];
+                println!("Server already has mod: {} ({})", &e.name, &e.hash);
+                uploads.swap_remove(i);
+            }
+        }
+    }
+    if uploads.len() == 0 {
+        return;
+    }
+
+    let mut upload = match client::upload(IP, dir, uploads).await {
         Ok(updater) => updater,
         Err(e) => {
             println!("Could not start upload, error: {}", e);
@@ -193,10 +283,13 @@ async fn upload(args: &Vec<&str>, dir: &ModDir, cache: &EntryCache) {
     };
 
     while let Some(entry) = upload.peek_next() {
-        println!("Uploading {} ({})", &entry.name, &entry.hash);
+        println!("Uploading: {} ({})", &entry.name, &entry.hash);
         match upload.upload_next().await {
             Ok(_) => println!("Upload completed"),
-            Err(e) => println!("Upload failed with error: {:?}", e)
+            Err(e) => {
+                println!("Upload failed with error: {:?}", e);
+                break;
+            }
         }
     }
 }
@@ -220,7 +313,7 @@ async fn set(
         }
     };
 
-    let match_prefix = match_hash_prefix(hash_prefix, server_state.lock().unwrap().entries.iter());
+    let match_prefix = match_hash_prefix(hash_prefix, &server_state.lock().unwrap().entries);
     let entry = match match_prefix {
         MatchPrefix::NoMatches => {
             println!("No mod exists with that hash");
@@ -234,9 +327,9 @@ async fn set(
     };
 
     match request_sender.request_set_mod_state(entry, mod_state).await {
-        Ok(_) => println!("request sent"),
-        Err(_) => {
-            println!("could not send request");
+        Ok(_) => (),
+        Err(e) => {
+            println!("Could not send request, error: {:?}", e);
             return;
         }
     }

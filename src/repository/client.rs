@@ -1,4 +1,4 @@
-use super::mod_fs::ModDir;
+use super::mod_fs::{self, EntryVerificationLock, ModDir, EntryAddError};
 use super::stream_util::{self, FileTransferError};
 use super::{
     ConnectionHeader, ExtendedModEntry, ModEntry, ModEntryState, ServerStateUpdateMessage,
@@ -99,28 +99,66 @@ pub async fn connect(ip_addr: impl ToSocketAddrs) -> io::Result<(RequestSender, 
     Ok((request_sender, update_receiver))
 }
 
-#[derive(Debug)]
-pub enum FileUpdate {
-    Started,
-    FileStarted { id: u64, entry: ModEntry },
-    FileUpdated { id: u64, progress: u32 },
-    FileFinished { id: u64 },
-    Disconnected(io::Result<()>),
+pub struct FileDownload<'a> {
+    stream: TcpStream,
+    downloads: Vec<ModEntry>,
+    download_index: usize,
+    mod_dir: &'a ModDir,
 }
 
-/*
-pub async fn download(ip_addr: impl ToSocketAddrs) -> io::Result<UpdateReceiver<FileUpdate>> {
+impl<'a> FileDownload<'a> {
+    pub fn peek_next(&self) -> Option<&ModEntry> {
+        if self.download_index < self.downloads.len() {
+            Some(&self.downloads[self.download_index])
+        } else {
+            None
+        }
+    }
+
+    pub async fn download_next(&mut self) -> Result<EntryVerificationLock, FileTransferError> {
+        if self.download_index >= self.downloads.len() {
+            panic!("Called download next when there is no more downloads");
+        }
+
+        let entry = self.downloads[self.download_index].clone();
+        let hash = &entry.hash;
+        let file_len = entry.file_len;
+        let entry_path = self.mod_dir.create_entry_path(hash);
+        let mut file = File::create(&entry_path).await?;
+
+        stream_util::copy_stream_and_verify_hash(&mut self.stream, &mut file, file_len, hash)
+            .await?;
+
+        mod_fs::write_metadata(self.mod_dir, &entry).await?;
+        let lock = match mod_fs::verify_can_add_entry(self.mod_dir, entry).await {
+            Ok(lock) => lock,
+            Err(EntryAddError::NoEntry) => panic!("Mod was not saved"),
+            Err(EntryAddError::NoMetadata) => panic!("Metadata was not saved"),
+            Err(EntryAddError::IO(e)) => return Err(FileTransferError::IO(e))
+        };
+
+        self.download_index += 1;
+        Ok(lock)
+    }
+}
+
+pub async fn download<'a>(
+    ip_addr: impl ToSocketAddrs,
+    mod_dir: &'a ModDir,
+    downloads: Vec<ModEntry>,
+) -> io::Result<FileDownload<'a>> {
     let mut stream = TcpStream::connect(ip_addr).await?;
-    let should_close = Arc::new(AtomicBool::new(false));
-    let should_close_clone = Arc::clone(&should_close);
-    let (tx, rx) = mpsc::channel(100);
-
     let header = ConnectionHeader::Download;
-    stream_util::write_message(&mut stream, &header);
+    stream_util::write_message(&mut stream, &header).await?;
+    stream_util::write_message(&mut stream, &downloads).await?;
 
-    Ok(UpdateReceiver { rx, should_close })
+    Ok(FileDownload {
+        downloads,
+        download_index: 0,
+        mod_dir,
+        stream,
+    })
 }
-*/
 
 pub struct FileUpload<'a> {
     stream: TcpStream,
@@ -164,10 +202,10 @@ impl<'a> FileUpload<'a> {
 pub async fn upload<'a>(
     ip_addr: impl ToSocketAddrs,
     mod_dir: &'a ModDir,
-    uploads: Vec<ModEntry>
+    uploads: Vec<ModEntry>,
 ) -> io::Result<FileUpload<'a>> {
     let mut stream = TcpStream::connect(ip_addr).await?;
-    let header = ConnectionHeader::Download;
+    let header = ConnectionHeader::Upload;
     stream_util::write_message(&mut stream, &header).await?;
     stream_util::write_message(&mut stream, &uploads).await?;
 
