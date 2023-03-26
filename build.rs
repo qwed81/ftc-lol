@@ -4,6 +4,16 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::io;
 
+fn execute(wd: &str, cmd_str: String) -> io::Result<ExitStatus> {
+    let args: Vec<&str> = cmd_str.split_whitespace().collect();
+    Command::new(args[0]).current_dir(wd).args(&args[1..]).status()
+}
+
+fn join(dir: &Path, name: &str) -> String {
+    let bootstrap_o = dir.join(name);
+    bootstrap_o.to_str().unwrap().to_owned()
+}
+
 fn main() {
     // get the /target/*/ directory to put the output files in
     let mut target_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
@@ -11,28 +21,25 @@ fn main() {
     target_dir.pop();
 
     println!("cargo:rerun-if-changed=src/patch");
-    if cfg!(target_os="linux") {
+    if cfg!(target_os="windows") {
         build_windows(&target_dir);
     }
 }
 
-fn cmd(wd: &str, cmd_str: &str) -> Result<ExitStatus> {
-    let args: Vec<&str> = cmd_str.split_whitespace().collect();
-    Command::new(args[0]).args(&args[1..])
-}
+fn build_windows(target: &Path) {
+    let pd = "src/patch";
+    let cmd = format!("nasm -o {} -f elf32 bootstrap.s", join(target, "bootstrap.o"));
+    execute(pd, cmd).unwrap();
 
-fn path(target_dir: &Path, name: &str) -> String {
-    let bootstrap_o = target_dir.join("bootstrap.o");
-    bootstrap_o.to_str().unwrap().to_owned()
-}
+    let cmd = format!("nasm -o {} -f elf32 as.s", join(target, "as.o"));
+    execute(pd, cmd).unwrap();
 
-fn build_windows(target_dir: &Path) {
-    let wd = "src/patch";
-    let boostrap_args = ["-o", &path(target_dir, "bootstrap_o"), "-f", "elf32", "bootstrap.s"];
+    let args = "-c -nostdlib -target i386-unknown-linux-elf -Wall";
+    let cmd = format!("clang {} -o {} patch.c", args, join(target, "patch.o"));
+    execute(pd, cmd).unwrap();
 
-    let as_o = target_dir.join("as.o");
-    let as_o = as_o.to_str().unwrap();
-    let as_args = ["-o", as_o, "-f", "elf32", "as.s"];
-
-    let patch_o = 
+    let args = "-fuse-ld=lld -static-pie -nostdlib -target i386-unknown-linux-elf";
+    let objs = format!("{} {} {}", join(target, "bootstrap.o"), join(target, "as.o"), join(target, "patch.o"));
+    let cmd = format!("clang {} {} {}", args, join(target, "patch"), &objs);
+    execute(pd, cmd).unwrap();
 }
