@@ -55,6 +55,8 @@ const MAX_PROCESS_ITER: usize = 10_000;
 const PROCESS_POLL_DURATION: Duration = Duration::from_millis(10);
 const REQUIRED_PROCESS_PERMS: u32 = PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION;
 
+const RESERVE_ADDR: ExPtr = 0x4020_0000;
+
 impl Loader {
 
     fn get_offset_ptr(&self, offset: ExPtr) -> ElfOff {
@@ -158,12 +160,9 @@ impl Loader {
         })
     }
 
-    const RESERVE_ADDR: ExPtr = 0x4020_0000;
 
     pub fn reserve_mem(&mut self, len: ExLen) -> Result<(), ()> {
         assert!(self.reserved.is_none());
-
-        println!("reserving memory, addr: {:x?} len: {}", reserve_addr, len);
 
         // make sure that it is ok to allocate this memory, and it will not be taken up by anyone
         // else. If not all the segments map to an actual page, it is ok because it will not
@@ -356,7 +355,7 @@ impl Loader {
         self.mem_write_direct(address_list.context_addr, &context_buf)?;
 
         const STACK_ADDR: u32 = 0x4500_0000;
-        const STACK_SIZE: u32 = 4096 * 4;
+        const STACK_SIZE: u32 = 4096 * 16;
         // allocate a new stack so it does not touch the other stack
         let alloc = unsafe {
             memoryapi::VirtualAllocEx(self.h_proc, STACK_ADDR as *mut c_void,
