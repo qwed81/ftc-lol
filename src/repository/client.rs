@@ -5,35 +5,28 @@ use super::{
     ServerStateUpdateRequest,
 };
 
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
 use tokio::fs::File;
 use tokio::io;
-use tokio::net::{tcp::OwnedWriteHalf, TcpStream, ToSocketAddrs};
-use tokio::sync::mpsc::{self, Receiver};
+use tokio::net::{tcp::{OwnedWriteHalf, OwnedReadHalf}, TcpStream, ToSocketAddrs};
 
 pub struct UpdateReceiver {
-    rx: Receiver<StateUpdate>,
-    should_close: Arc<AtomicBool>,
+    reader: OwnedReadHalf,
 }
-impl UpdateReceiver {
-    pub async fn next(&mut self) -> StateUpdate {
-        match self.rx.recv().await {
-            Some(val) => val,
-            None => panic!("Continued to call next after disconnected"),
-        }
-    }
 
-    pub fn notify_should_close(&mut self) {
-        self.should_close.store(true, Ordering::Relaxed);
+impl UpdateReceiver {
+    pub async fn next(&mut self) -> Option<Vec<ExtendedModEntry>> {
+        let message: ServerStateUpdateMessage;
+        message = match stream_util::read_message(&mut self.reader).await {
+            Ok(message) => message,
+            Err(_) => return None,
+        };
+
+        Some(message.server_mods)
     }
 }
 
 pub struct RequestSender {
     writer: OwnedWriteHalf,
-    should_close: Arc<AtomicBool>,
 }
 
 impl RequestSender {
@@ -49,52 +42,19 @@ impl RequestSender {
 
         stream_util::write_message(&mut self.writer, &request).await
     }
-
-    pub fn notify_should_close(&mut self) {
-        self.should_close.store(true, Ordering::Relaxed);
-    }
-}
-
-#[derive(Debug)]
-pub enum StateUpdate {
-    Connected,
-    StateUpdate(Vec<ExtendedModEntry>),
-    Disconnected,
 }
 
 pub async fn connect(ip_addr: impl ToSocketAddrs) -> io::Result<(RequestSender, UpdateReceiver)> {
     let stream = TcpStream::connect(ip_addr).await?;
-    let (mut reader, mut writer) = stream.into_split();
-    let should_close = Arc::new(AtomicBool::new(false));
-    let should_close_clone = Arc::clone(&should_close);
-    let (tx, rx) = mpsc::channel(100);
-
+    let (reader, mut writer) = stream.into_split();
     let header = ConnectionHeader::Subscribe;
     stream_util::write_message(&mut writer, &header).await?;
 
-    tokio::spawn(async move {
-        tx.send(StateUpdate::Connected).await.unwrap();
-        while should_close_clone.load(Ordering::Relaxed) == false {
-            let message: ServerStateUpdateMessage;
-            message = match stream_util::read_message(&mut reader).await {
-                Ok(message) => message,
-                Err(_) => break,
-            };
-
-            tx.send(StateUpdate::StateUpdate(message.server_mods))
-                .await
-                .unwrap();
-        }
-        tx.send(StateUpdate::Disconnected).await.unwrap();
-    });
-
     let update_receiver = UpdateReceiver {
-        rx,
-        should_close: Arc::clone(&should_close),
+        reader
     };
     let request_sender = RequestSender {
         writer,
-        should_close,
     };
     Ok((request_sender, update_receiver))
 }
