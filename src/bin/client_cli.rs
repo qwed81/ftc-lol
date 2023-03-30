@@ -1,4 +1,4 @@
-use skins::repository::client::{self, RequestSender, StateUpdate, UpdateReceiver};
+use skins::repository::client::{self, RequestSender, UpdateReceiver};
 use skins::repository::mod_fs::{self, EntryCache, ModDir};
 use skins::repository::{ExtendedModEntry, ModEntry, ModEntryState};
 use std::io::Write;
@@ -74,9 +74,8 @@ async fn handle_updates(
     loop {
         let update = update_receiver.next().await;
         match update {
-            StateUpdate::Connected => (),
-            StateUpdate::StateUpdate(mods) => state.lock().unwrap().entries = mods,
-            StateUpdate::Disconnected => {
+            Some(mods) => state.lock().unwrap().entries = mods,
+            None => {
                 println!("Disconnected");
                 state.lock().unwrap().connected = false;
                 break;
