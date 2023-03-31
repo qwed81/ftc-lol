@@ -1,12 +1,20 @@
 use std::env;
-use std::process::{ExitStatus, Command};
+use std::process::Command;
 use std::path::Path;
 use std::path::PathBuf;
-use std::io;
 
-fn execute(wd: &str, cmd_str: String) -> io::Result<ExitStatus> {
+fn execute(wd: &str, cmd_str: String) {
     let args: Vec<&str> = cmd_str.split_whitespace().collect();
-    Command::new(args[0]).current_dir(wd).args(&args[1..]).status()
+    let mut command = Command::new(args[0]);
+    command.current_dir(wd).args(&args[1..]);
+    let output = command.output().unwrap().stderr;
+    let output = String::from_utf8_lossy(&output);
+    let lines = output.split('\n');
+    for line in lines {
+        if line.len() > 0 {
+            println!("cargo:warning={}", line);
+        }
+    }
 }
 
 fn join(dir: &Path, name: &str) -> String {
@@ -28,13 +36,13 @@ fn build_windows(target: &Path) {
     let pd = "src/patch";
     let bootstrap_o = join(target, "bootstrap.o");
     let cmd = format!("nasm -f elf32 -o {bootstrap_o} bootstrap.s");
-    execute(pd, cmd).unwrap();
+    execute(pd, cmd);
 
     let patch_o = join(target, "patch.o");
     let cmd = format!("clang -c -fno-stack-protector -nostdlib -fPIC -target i386-unknown-linux-elf -Wall -o {patch_o} patch.c");
-    execute(pd, cmd).unwrap();
+    execute(pd, cmd);
 
     // link the items together
     let cmd = format!("clang -fuse-ld=lld -fPIE -nostdlib -target i386-unknown-linux-elf -o patch bootstrap.o patch.o");
-    execute(target.to_str().unwrap(), cmd).unwrap();
+    execute(target.to_str().unwrap(), cmd);
 }
