@@ -19,27 +19,22 @@ fn main() {
     let mut target_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     target_dir.pop();
     target_dir.pop();
+    target_dir.pop();
 
-    println!("cargo:rerun-if-changed=src/patch");
-    if cfg!(target_os="windows") {
-        build_windows(&target_dir);
-    }
+    build_windows(&target_dir);
 }
 
 fn build_windows(target: &Path) {
     let pd = "src/patch";
-    let cmd = format!("nasm -o {} -f elf32 bootstrap.s", join(target, "bootstrap.o"));
+    let bootstrap_o = join(target, "bootstrap.o");
+    let cmd = format!("nasm -f elf32 -o {bootstrap_o} bootstrap.s");
     execute(pd, cmd).unwrap();
 
-    let cmd = format!("nasm -o {} -f elf32 as.s", join(target, "as.o"));
+    let patch_o = join(target, "patch.o");
+    let cmd = format!("clang -c -fno-stack-protector -nostdlib -fPIC -target i386-unknown-linux-elf -Wall -o {patch_o} patch.c");
     execute(pd, cmd).unwrap();
 
-    let args = "-c -nostdlib -target i386-unknown-linux-elf -Wall";
-    let cmd = format!("clang {} -o {} patch.c", args, join(target, "patch.o"));
-    execute(pd, cmd).unwrap();
-
-    let args = "-fuse-ld=lld -static-pie -nostdlib -target i386-unknown-linux-elf";
-    let objs = format!("{} {} {}", join(target, "bootstrap.o"), join(target, "as.o"), join(target, "patch.o"));
-    let cmd = format!("clang {} {} {}", args, join(target, "patch"), &objs);
-    execute(pd, cmd).unwrap();
+    // link the items together
+    let cmd = format!("clang -fuse-ld=lld -fPIE -nostdlib -target i386-unknown-linux-elf -o patch bootstrap.o patch.o");
+    execute(target.to_str().unwrap(), cmd).unwrap();
 }

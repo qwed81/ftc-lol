@@ -6,4 +6,4 @@ start: src/patch/bootstrap.s
 	nasm -o target/debug/bootstrap.o -f elf32 src/patch/bootstrap.s
 
 patch: src/patch/patch.c
-	clang -c -nostdlib -fPIC -target i386-unknown-linux-elf -Wall -o target/debug/patch.o src/patch/patch.c
+	clang -c -nostdlib -fno-stack-protector -fPIC -target i386-unknown-linux-elf -Wall -o target/debug/patch.o src/patch/patch.c
