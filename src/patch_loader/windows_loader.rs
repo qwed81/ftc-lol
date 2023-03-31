@@ -19,7 +19,7 @@ use winapi::ctypes::c_void;
 use std::mem::MaybeUninit;
 use std::ptr;
 use std::mem;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::collections::HashSet;
 
 use tokio::time;
@@ -52,7 +52,15 @@ struct SymbolOffsetList {
 
 const MAX_PROCESS_FILE_NAME_LEN: usize = 1_000;
 const MAX_PROCESS_ITER: usize = 10_000;
+const MAX_MODULES: usize = 1000;
+
+// the amount of modules that need to be loaded before the thread is suspended and we apply hooks
+const PATCH_LOAD_MOD_AMT_THRESHOLD: usize = 5; 
+
 const PROCESS_POLL_DURATION: Duration = Duration::from_millis(10);
+const MOD_POLL_DURATION: Duration = Duration::from_millis(1);
+const TIME_BEFORE_MOD_POLL_FAIL: Duration = Duration::from_secs(20);
+
 const REQUIRED_PROCESS_PERMS: u32 = PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION;
 
 const RESERVE_ADDR: ExPtr = 0x4020_0000;
@@ -167,6 +175,43 @@ impl Loader {
         };
 
         Ok(Loader { pid, h_proc: handle, reserved: None })
+    }
+
+    pub async fn wait_can_patch(&self) -> Result<(), ()> {
+        let mut modules = [ptr::null_mut(); MAX_MODULES];
+        let start = Instant::now();
+        loop {
+            let mut amt_needed = 0;
+            let result = unsafe {
+                psapi::EnumProcessModules(self.h_proc, modules.as_mut_ptr(), modules.len() as u32, &mut amt_needed)
+            };
+
+            // when it is loading and there are no modules, it is expected that this
+            // call fails
+            if result == 0 {
+                let err = unsafe { errhandlingapi::GetLastError() };
+                if err != 299 {
+                    println!("error while enumerating modules, error: {}", err);
+                    return Err(());
+                }
+
+                time::sleep(MOD_POLL_DURATION).await;
+                continue;
+            }
+
+            let mod_amt = amt_needed as usize / mem::size_of::<*mut c_void>();
+
+            // it is done loading enough for us to suspend and patch it
+            if mod_amt >= PATCH_LOAD_MOD_AMT_THRESHOLD {
+                return Ok(())
+            }
+
+            if Instant::now() - start > TIME_BEFORE_MOD_POLL_FAIL {
+                return Err(())
+            } 
+
+            time::sleep(MOD_POLL_DURATION).await;
+        }
     }
 
     /*

@@ -148,6 +148,7 @@ pub async fn load_patch(file: &Path, process_file_name: &[u8]) -> Result<(), ()>
     let file = File::open(file).unwrap();
 
     let mut loader = Loader::wait_spawn(process_file_name).await?;
+    loader.wait_can_patch().await?;
 
     // elf file mapped into memory
     let mapped_file = unsafe { MmapOptions::new().map(&file).unwrap() };
@@ -156,8 +157,6 @@ pub async fn load_patch(file: &Path, process_file_name: &[u8]) -> Result<(), ()>
 
     let total_needed = mem_end - mem_start;
     loader.reserve_mem(total_needed).unwrap();
-
-    std::thread::sleep(std::time::Duration::from_millis(1000));
     load_segments(&mapped_file, &elf, &mut loader, mem_start).unwrap();
 
     // read the starting address
