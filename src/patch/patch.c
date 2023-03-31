@@ -25,6 +25,7 @@ static void log_int(void* log_handle, uint32_t val);
 static void log_wstr(void* log_handle, const WCHAR* msg);
 static uint32_t str_len(const char* str, uint32_t max);
 static bool str_eq(const char* a, const char* b);
+static bool prefixes_str(const char* prefix, const char* str);
 
 static bool can_read_page(void* addr);
 static void* find_mem_pattern(void* begin, uint32_t search_len, const char* pattern);
@@ -39,8 +40,6 @@ typedef struct BootstrapData {
     void* var_original_jump_addr;
     void* var_fn_ptr_addr;
 } BootstrapData;
-
-static uint32_t apply_swap_return_hook(BootstrapData* data, uint32_t search_len);
 
 // must be set to locate all of the other os functions
 static void* kernel32_addr;
@@ -67,10 +66,6 @@ void init(BootstrapData* data) {
     log_str(log_handle, "\nlol module at: ");
     log_int(log_handle, (size_t)data->arg_lol_module);
 
-    if (apply_swap_return_hook(data, 4096 * 100000) != 0) {
-        return;
-    }
-
     // log the hook values
     log_str(log_handle, "\nfn at: ");
     log_int(log_handle, (size_t)data->var_fn_ptr_addr);
@@ -81,56 +76,74 @@ void init(BootstrapData* data) {
 
     post_hook_ReadFile = (ReadFileType) apply_jump_fn_hook(my_ReadFile, ReadFileAddr);
     if (post_hook_ReadFile == NULL) {
-        log_str(log_handle, "Could not hook ReadFile");
+        log_str(log_handle, "\nCould not hook ReadFile");
         return;
     }
 
     post_hook_CreateFileA = (CreateFileAType) apply_jump_fn_hook(my_CreateFileA, CreateFileAAddr); 
     if (post_hook_CreateFileA == NULL) {
-        log_str(log_handle, "Could not hook CreateFileA");
+        log_str(log_handle, "\nCould not hook CreateFileA");
         return;
     }
 
     post_hook_CreateFileW = (CreateFileWType) apply_jump_fn_hook(my_CreateFileW, CreateFileWAddr); 
     if (post_hook_CreateFileW == NULL) {
-        log_str(log_handle, "Could not hook CreateFileW");
+        log_str(log_handle, "\nCould not hook CreateFileW");
         return;
     }
 
 }
 
-static uint32_t apply_swap_return_hook(BootstrapData* data, uint32_t search_len) {
-    void* er = find_mem_pattern(data->arg_lol_module, search_len, FILTER_EXPECTED_RETURN);
+#define SEARCH_LEN 10000 * 4096
+static uint32_t apply_swap_return_hook() {
+    void* er = find_mem_pattern(bs_data->arg_lol_module, SEARCH_LEN, FILTER_EXPECTED_RETURN);
     if (er == NULL) {
-        log_str(log_handle, "Could not locate expected return");
+        log_str(log_handle, "\nCould not locate expected return");
         return 1;
     }
 
-    data->var_expected_return_addr = er + 0xA; // get the actual value after finding pattern
+    bs_data->var_expected_return_addr = er + 0xA; // get the actual value after finding pattern
 
-    void* fn = find_mem_pattern(data->arg_lol_module, search_len, FILTER_FN);
+    void* fn = find_mem_pattern(bs_data->arg_lol_module, SEARCH_LEN, FILTER_FN);
     if (fn == NULL) {
-        log_str(log_handle, "Could not locate fn ptr");
+        log_str(log_handle, "\nCould not locate fn ptr");
         return 1;
     }
 
-    data->var_original_jump_addr = fn + 0x12;
-    data->var_fn_ptr_addr = *(void**)(fn + 0x1); // follow the pointer to get the heap value
+    bs_data->var_original_jump_addr = fn + 0x12;
+    bs_data->var_fn_ptr_addr = *(void**)(fn + 0x1); // follow the pointer to get the heap value
 
     // swap the fn pointer on the stack to my fn
-    *(void**)data->var_fn_ptr_addr = data->arg_swap_return;
+    *(void**)bs_data->var_fn_ptr_addr = bs_data->arg_swap_return;
 
     return 0;
 } 
 
-__attribute__((stdcall))
-static uint32_t my_ReadFile(void* handle, void* buffer, uint32_t bytes_to_read, uint32_t* bytes_read, void* lp_overlapped) {
-    return post_hook_ReadFile(handle, buffer, bytes_to_read, bytes_read, lp_overlapped);
-}
-
+static int32_t valid_apply = 0;
 __attribute__((stdcall))
 static void* my_CreateFileA(const char* name, uint32_t access, uint32_t share, void* security,
     uint32_t creation, uint32_t flags, void* template) {
+
+    // when the first file that starts with DATA comes, 
+    // apply the hook
+    if (valid_apply == 0 && prefixes_str("DATA", name)) {
+        log_str(log_handle, "\nApplying create file A");
+        uint32_t result = apply_swap_return_hook();
+        if (result != 0) {
+            log_str(log_handle, "\nCould not apply swap hook");
+            valid_apply = 2;
+        } else {
+            valid_apply = 1;
+        }
+    }
+
+    // there was an error applying, just do what the function was supposed to do
+    // like the hook was never applied
+    if (valid_apply == 2) {
+        log_str(log_handle, "\nInvalid apply: ");
+        log_str(log_handle, name);
+        return post_hook_CreateFileA(name, access, share, security, creation, flags, template);
+    }
     
     log_str(log_handle, "\ncreate file A: ");
     log_str(log_handle, name);
@@ -149,6 +162,11 @@ static void* my_CreateFileA(const char* name, uint32_t access, uint32_t share, v
 }
 
 __attribute__((stdcall))
+static uint32_t my_ReadFile(void* handle, void* buffer, uint32_t bytes_to_read, uint32_t* bytes_read, void* lp_overlapped) {
+    return post_hook_ReadFile(handle, buffer, bytes_to_read, bytes_read, lp_overlapped);
+}
+
+__attribute__((stdcall))
 static void* my_CreateFileW(const WCHAR* name, uint32_t access, uint32_t share, void* security,
     uint32_t creation, uint32_t flags, void* template) {
 
@@ -163,7 +181,7 @@ static void* apply_jump_fn_hook(void* new_func, void* addr) {
 
     uint32_t protect = VirtualProtect(addr, 20, PAGE_EXECUTE_READWRITE, &old_protect);
     if (protect == 0) {
-        log_str(log_handle, "\nCould not protect mem, error: ");
+        log_str(log_handle, "\nCould not protect mem RWX, error: ");
         log_int(log_handle, GetLastError());
         return NULL;
     }
@@ -180,10 +198,27 @@ static void* apply_jump_fn_hook(void* new_func, void* addr) {
 
     protect = VirtualProtect(addr, 200, PAGE_EXECUTE_READ, &old_protect);
     if (protect == 0) {
+        log_str(log_handle, "\nCould not protect mem RX, error: ");
+        log_int(log_handle, GetLastError());
         return NULL;
     }
 
     return new_addr;
+}
+
+static bool prefixes_str(const char* prefix, const char* str) {
+    uint32_t i = 0;
+    while (true) {
+        if (prefix[i] == '\0') {
+            return true;
+        }
+
+        if (str[i] == '\0' || str[i] != prefix[i]) {
+            return false;
+        }
+
+        i += 1;
+    }
 }
 
 static bool wstr_eq(const WCHAR* a, const WCHAR* b) {

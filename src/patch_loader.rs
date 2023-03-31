@@ -158,7 +158,7 @@ pub fn load_patch(file: &Path, process_file_name: &[u8], max_wait: Duration) -> 
     let total_needed = mem_end - mem_start;
     loader.reserve_mem(total_needed).unwrap();
 
-    std::thread::sleep(std::time::Duration::from_millis(4000));
+    std::thread::sleep(std::time::Duration::from_millis(1000));
     load_segments(&mapped_file, &elf, &mut loader, mem_start).unwrap();
 
     // read the starting address
