@@ -1,7 +1,6 @@
 use std::fs::File;
 use std::path::Path;
 use std::slice;
-use std::time::Duration;
 
 use goblin::{
     elf::{Elf, ProgramHeader},
@@ -145,10 +144,10 @@ mod linux_loader;
 #[cfg(target_os="linux")]
 use linux_loader::Loader as Loader;
 
-pub fn load_patch(file: &Path, process_file_name: &[u8], max_wait: Duration) -> Result<(), ()> {
+pub async fn load_patch(file: &Path, process_file_name: &[u8]) -> Result<(), ()> {
     let file = File::open(file).unwrap();
 
-    let mut loader = Loader::wait_spawn(process_file_name, max_wait)?;
+    let mut loader = Loader::wait_spawn(process_file_name).await?;
 
     // elf file mapped into memory
     let mapped_file = unsafe { MmapOptions::new().map(&file).unwrap() };

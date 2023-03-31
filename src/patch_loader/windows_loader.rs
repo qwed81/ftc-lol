@@ -19,10 +19,10 @@ use winapi::ctypes::c_void;
 use std::mem::MaybeUninit;
 use std::ptr;
 use std::mem;
-use std::thread;
 use std::time::Duration;
 use std::collections::HashSet;
-use std::time::Instant;
+
+use tokio::time;
 
 use super::{ExPtr, ExLen, MemProt, ElfOff};
 
@@ -96,54 +96,80 @@ impl Loader {
         }
     }
 
-    pub fn wait_spawn(process_file_name: &[u8], max_wait: Duration) -> Result<Loader, ()> {
-        let start_time = Instant::now();
+    pub async fn wait_spawn(process_file_name: &[u8]) -> Result<Loader, ()> {
 
-        let mut buffer = [0; MAX_PROCESS_ITER];
-        let mut amt_returned = 0;
+        // we can use the fact the EnumProcesses returns items in the same
+        // order they were before if nothing changed to just to an arr comparison
+        // which is super cheap compared to other methods
+        // these are heap allocated because the future would be massive if they were
+        // stack allocated
+        let mut buf1 = Vec::with_capacity(MAX_PROCESS_ITER);
+        let mut buf2 = Vec::with_capacity(MAX_PROCESS_ITER);
+        for _ in 0..MAX_PROCESS_ITER {
+            buf1.push(0);
+            buf2.push(0);
+        }
 
-        let mut valid_pids = HashSet::new();
-        let mut swap_set = HashSet::new();
+        // allows us to swap the reference so we don't have to copy
+        // between buffers
+        let mut buf_ref = &mut buf1;
+        let mut old_ref = &mut buf2;
+
+        let mut size_needed = 0;
+        let mut old_returned = 0;
+        let mut amt_returned;
+
+        // in the case the arrays don't equal, this holds the previous values
+        // so we can lookup items fast and determine which items need to be added
+        let mut old_pids = HashSet::new();
         println!("waiting for process: \"{}\"", String::from_utf8_lossy(process_file_name));
 
         let (pid, handle) = 'outer: loop {
             let result = unsafe {
-                psapi::EnumProcesses(buffer.as_mut_ptr(), buffer.len() as u32, &mut amt_returned)
+                psapi::EnumProcesses(buf_ref.as_mut_ptr(), buf_ref.len() as u32, &mut size_needed)
             };
-
+            
             if result == 0 {
                 let err = unsafe { errhandlingapi::GetLastError() };
                 println!("could not enumerate processes, error: {}", err);
                 return Err(());
             }
 
-            for i in 0..(amt_returned as usize) {
-                let pid = buffer[i];
-                swap_set.insert(pid);
+            amt_returned = size_needed as usize / mem::size_of::<u32>();
 
-                // it has already been looked up, and does not have that name
-                if valid_pids.contains(&pid) {
-                    continue;
+            let slice = &buf_ref[0..amt_returned];
+            let old_slice = &old_ref[0..old_returned];
+            // if there was a change in the pid list
+            if amt_returned != old_returned || slice != old_slice {
+                for &pid in slice {
+                    // this pid is old, so we don't need to check it
+                    if old_pids.contains(&pid) { 
+                        continue;
+                    }
+                    
+                    // if we found the process, then break out of the loop
+                    if let Some(handle) = Loader::process_is_named(pid, process_file_name) {
+                        break 'outer (pid, handle);
+                    }
                 }
-
-                if let Some(handle) = Loader::process_is_named(pid, process_file_name) {
-                    break 'outer (pid, handle);
+                
+                // set the old pids to the new pids
+                old_pids.clear();
+                for &pid in slice {
+                    old_pids.insert(pid);
                 }
             }
-            
-            valid_pids.clear();
-            mem::swap(&mut valid_pids, &mut swap_set);
 
-            if Instant::now() > start_time + max_wait {
-                return Err(())
-            }
+            mem::swap(&mut buf_ref, &mut old_ref);
+            old_returned = amt_returned;
 
-            thread::sleep(PROCESS_POLL_DURATION);
+            time::sleep(PROCESS_POLL_DURATION).await;
         };
 
         Ok(Loader { pid, h_proc: handle, reserved: None })
     }
 
+    /*
     pub fn from_pid(pid: u32) -> Result<Loader, ()> {
         let h_proc = unsafe {
             processthreadsapi::OpenProcess(REQUIRED_PROCESS_PERMS, 0, pid)
@@ -159,7 +185,7 @@ impl Loader {
             reserved: None 
         })
     }
-
+    */
 
     pub fn reserve_mem(&mut self, len: ExLen) -> Result<(), ()> {
         assert!(self.reserved.is_none());
