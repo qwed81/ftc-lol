@@ -43,6 +43,9 @@
 //
 // 
 
+use std::collections::HashMap;
+use super::wad;
+
 enum SegmentReplace<'a> {
     GameSegment { start: u32, len: u32, data_off: u32 },
     ModSegment { start: u32, data: &'a [u8] }
@@ -65,7 +68,66 @@ impl<'a> SegmentTableBuilder<'a> {
         }
     }
 
-    pub fn add_file(&mut self, file_name: &'a [u8], old_file: &[u8], replace_file: &'a [u8]) -> Result<(), ()> {
+    pub fn add_wad(&mut self, file_name: &'a [u8], old_file: &[u8], replace_file: &'a [u8]) -> Result<(), ()> {
+        let mut entry_map = HashMap::new();
+        let old_header = wad::read_header(old_file)?;
+
+        let mut file_replace = FileReplace { 
+            name: file_name,
+            segments: Vec::new()
+        };
+        
+        // add all of the old entries mapped to their name + checksum
+        for i in 0..(old_header.entry_count as usize) {
+            let entry = wad::read_entry(old_file, i)?;
+            entry_map.insert((entry.name, entry.checksum), entry);
+        }
+
+        let replace_header = wad::read_header(replace_file)?;
+
+        // replace the header with the replace_header
+        file_replace.segments.push(SegmentReplace::ModSegment {
+            start: wad::HEADER_START,
+            data: wad::slice_header(replace_file)
+        });
+
+        // replace the entry table with the new entry table
+        file_replace.segments.push(SegmentReplace::ModSegment {
+            start: wad::ENTRY_TABLE_START,
+            data:  wad::slice_entry_table(replace_file, replace_header)
+        });
+        
+        for i in 0..(replace_header.entry_count as usize) {
+            let replace_entry = wad::read_entry(replace_file, i)?;
+            match entry_map.remove(&(replace_entry.name, replace_entry.checksum)) {
+                // both the old and new file have this entry, load if from game files
+                Some(game_entry) => {
+                    file_replace.segments.push(SegmentReplace::GameSegment {
+                        start: replace_entry.offset,
+                        len: replace_entry.len,
+                        data_off: game_entry.offset
+                    });
+                }
+                // only the new file has this entry, so it needs to be added as a mod
+                None => {
+                    let data = wad::read_entry_data(replace_file, replace_entry)?;
+                    assert_eq!(data.len(), replace_entry.len as usize);
+
+                    file_replace.segments.push(SegmentReplace::ModSegment {
+                        start: replace_entry.offset,
+                        data
+                    })
+                }
+            }
+
+        }
+        
+        file_replace.segments.sort_by(|a, b| {
+            start_of(a).cmp(&start_of(b))
+        });
+
+        self.files.push(file_replace);
+
         Ok(())
     }
 
@@ -156,6 +218,30 @@ impl<'a> SegmentTableBuilder<'a> {
         buf
     }
 
+    pub fn print_stats(&self) {
+        for file in &self.files {
+            let name = std::str::from_utf8(file.name).unwrap();
+            println!("{}:", name); 
+            for segment in &file.segments {
+                match segment {
+                    &SegmentReplace::ModSegment { start, data } => {
+                        println!("Replace mod: start: {} len: {}", start, data.len());
+                    }
+                    &SegmentReplace::GameSegment { start, len, data_off } => {
+                        println!("Replace game: start: {} off: {} len: {}", start, data_off, len);
+                    }
+                }
+            }
+        }
+    }
+
+}
+
+fn start_of(seg: &SegmentReplace) -> u32 {
+    match seg {
+        &SegmentReplace::GameSegment { start, len: _, data_off: _ } => start,
+        &SegmentReplace::ModSegment { start, data: _ } => start
+    }
 }
 
 fn reserve_u32(vec: &mut Vec<u8>, amt: usize) {
@@ -171,6 +257,7 @@ fn push_u32(vec: &mut Vec<u8>, val: u32) {
 fn set_u32(vec: &mut Vec<u8>, val: u32, index: usize) {
     let bytes = val.to_le_bytes();
     for i in 0..4 {
-        vec[index + i] = vec[i];
+        vec[index + i] = bytes[i];
     }
 }
+
