@@ -1,11 +1,11 @@
 use goblin::elf::{Elf, ProgramHeader};
 use goblin::elf64::program_header::PT_LOAD;
 
-use super::{ExPtr, ElfOff, MemProt};
+use super::{ElfOff, MemProt};
 
 pub struct LoadRange {
-    pub mem_start: ExPtr,
-    pub mem_end: ExPtr
+    pub mem_start: ElfOff,
+    pub mem_end: ElfOff
 }
 
 pub fn get_sym_offset(elf: &Elf, sym_name: &str) -> Option<ElfOff> {
@@ -32,7 +32,7 @@ pub(super) fn get_protection(header: &ProgramHeader) -> MemProt {
 }
 
 pub fn get_load_range(headers: &[ProgramHeader]) -> LoadRange {
-    let mem_start: ExPtr = headers
+    let mem_start: ElfOff = headers
         .iter()
         .filter_map(|h| {
             if h.p_type != PT_LOAD {
@@ -46,7 +46,7 @@ pub fn get_load_range(headers: &[ProgramHeader]) -> LoadRange {
         .try_into()
         .unwrap();
 
-    let mem_end: ExPtr = headers
+    let mem_end: ElfOff = headers
         .iter()
         .filter_map(|h| {
             if h.p_type != PT_LOAD {
