@@ -41,8 +41,30 @@ typedef struct BootstrapData {
     void* var_fn_ptr_addr;
 } BootstrapData;
 
+typedef struct FileReplaceHeader {
+	uint32_t name_str_len;
+	uint32_t segment_list_offset;
+	uint32_t segent_list_entry_count;
+
+	// the actual string will be the length of
+	// name_str_len, however this works as a pointer
+	// to the string
+	char name_start[4];
+} FileReplaceHeader;
+
+#define MOD_SEGMENT = 0
+#define GAME_SEGMENT = 1
+
+typedef struct SegmentReplaceEntry {
+	uint32_t segment_type;
+	uint32_t start;
+	uint32_t len;
+	uint32_t data_off;
+} SegmentReplaceEntry;
+
 // must be set to locate all of the other os functions
 static void* kernel32_addr;
+static void* segment_table;
 static BootstrapData* bs_data;
 
 // compiler is not doing what i want when static const char*, not sure why
@@ -50,7 +72,6 @@ static BootstrapData* bs_data;
 #define FILTER_EXPECTED_RETURN "68 A0 02 00 00 E8 ?? ?? ?? ?? 83 C4 50"
 // #define FILTER_FN "74 02 FF E0 8B 44 24 04 85 C0 75 3E"
 #define FILTER_FN "A1 ?? ?? ?? ?? 85 C0 74 ?? 3D ?? ?? ?? ?? 74 02 FF E0 8B 44 24"
-
 
 __attribute__ ((no_caller_saved_registers, fastcall))
 void init(BootstrapData* data) {
@@ -61,18 +82,15 @@ void init(BootstrapData* data) {
        GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ,
        NULL, CREATE_ALWAYS, FILE_FLAG_WRITE_THROUGH, NULL);
 
-    log_str(log_handle, "log file working");
+    log_str(log_handle, "Log file working");
 
     log_str(log_handle, "\nlol module at: ");
     log_int(log_handle, (size_t)data->arg_lol_module);
 
-    // log the hook values
-    log_str(log_handle, "\nfn at: ");
-    log_int(log_handle, (size_t)data->var_fn_ptr_addr);
-    log_str(log_handle, "\njump original addr: ");
-    log_int(log_handle, (size_t)data->var_original_jump_addr);
-    log_str(log_handle, "\nexpected return at: ");
-    log_int(log_handle, (size_t)data->var_expected_return_addr);
+	if (str_eq((char*)segment_table, "seg") == false) {
+		log_str(log_handle, "Segment table magic not valid");
+		return;
+	}
 
     post_hook_ReadFile = (ReadFileType) apply_jump_fn_hook(my_ReadFile, ReadFileAddr);
     if (post_hook_ReadFile == NULL) {
@@ -116,8 +134,79 @@ static uint32_t apply_swap_return_hook() {
     // swap the fn pointer on the stack to my fn
     *(void**)bs_data->var_fn_ptr_addr = bs_data->arg_swap_return;
 
+	log_str(log_handle, "\nfn at: ");
+	log_int(log_handle, (size_t)bs_data->var_fn_ptr_addr);
+
+	log_str(log_handle, "\njump original addr: ");
+	log_int(log_handle, (size_t)bs_data->var_original_jump_addr);
+
+	log_str(log_handle, "\nexpected return at: ");
+	log_int(log_handle, (size_t)bs_data->var_expected_return_addr);
+
     return 0;
 } 
+
+// either returns the header or NULL if it does not exist
+static FileReplaceHeader* lookup_file(const char* name) {
+	uint32_t num_files = *(uint32_t*)(segment_table + 4);
+
+	// the first header is 8 bytes into the segment table
+	FileReplaceHeader* header = (FileReplaceHeader*)(segment_table + 8);
+	for (int iter = 0; iter < num_files; iter += 1) {
+		if (str_eq(header->name_start, name)) {
+			return header;
+		}
+
+		// 12 for each of the files, and 1 more for the null terminator
+		uint32_t this_header_size = header->name_str_len + 13;
+		// take into account padding of the struct
+		if (this_header_size % 4 != 0) {
+			this_header_size += 4 - this_header_size % 4;
+		}
+		header = (FileReplaceHeader*)(((char*)header) + this_header_size);
+	}
+
+	return NULL;
+}
+
+typedef struct MapEntry {
+	void* handle;
+	FileReplaceHeader* header;
+} MapEntry;
+
+#define HEADER_MAP_LEN 512
+
+// the linear probing hashmap
+static MapEntry map[HEADER_MAP_LEN] = { 0 }; 
+
+static uint32_t hash_handle(void* handle) {
+	return ((size_t)handle >> 4) % HEADER_MAP_LEN;
+}
+
+static void map_header(void* handle, FileReplaceHeader* header) {
+	uint32_t hash = hash_handle(handle);
+	while (map[hash].handle != handle) {
+		if (map[hash].handle == NULL) {
+			return;
+		}
+		hash = (hash + 1) % HEADER_MAP_LEN;
+	}
+
+	map[hash].handle = handle;
+	map[hash].header = header;
+}
+
+static FileReplaceHeader* get_header(void* handle) {
+	uint32_t hash = hash_handle(handle);
+	while (map[hash].handle != handle) {
+		if (map[hash].handle == NULL) {
+			return NULL;
+		}
+		hash = (hash + 1) % HEADER_MAP_LEN;
+	}
+
+	return &map[hash].header;
+}
 
 static int32_t valid_apply = 0;
 __attribute__((stdcall))
@@ -144,10 +233,20 @@ static void* my_CreateFileA(const char* name, uint32_t access, uint32_t share, v
         log_str(log_handle, name);
         return post_hook_CreateFileA(name, access, share, security, creation, flags, template);
     }
-    
-    log_str(log_handle, "\ncreate file A: ");
-    log_str(log_handle, name);
 
+	void* handle = post_hook_CreateFileA(name, access, share, security, creation, flags, template);
+	if (handle == NULL) {
+		return NULL;
+	}
+
+	FileReplaceHeader* header = lookup_file(name);
+	if (header != NULL) {
+		map_header(handle, header);
+		log_str(log_handle, "\nMapped file: ");
+		log_str(log_handle, name);
+	}
+
+	/*
     if (str_eq(name, "DATA/FINAL/Champions/Nunu.wad.client")) {
         name = "C:/Users/josh/Desktop/cslol-manager/profiles/Default Profile/DATA/FINAL/Champions/Nunu.wad.client";
     } 
@@ -157,13 +256,21 @@ static void* my_CreateFileA(const char* name, uint32_t access, uint32_t share, v
 
     log_str(log_handle, "\ncall count is: ");
     log_int(log_handle, bs_data->var_call_count);
+	*/
 
-    return post_hook_CreateFileA(name, access, share, security, creation, flags, template);
+    return handle;
 }
 
 __attribute__((stdcall))
 static uint32_t my_ReadFile(void* handle, void* buffer, uint32_t bytes_to_read, uint32_t* bytes_read, void* lp_overlapped) {
-    return post_hook_ReadFile(handle, buffer, bytes_to_read, bytes_read, lp_overlapped);
+	FileReplaceHeader* header = get_header(handle);
+
+	// this file does not need to be replaced, give what it asked for
+	if (header == NULL) {
+    	return post_hook_ReadFile(handle, buffer, bytes_to_read, bytes_read, lp_overlapped);
+	}
+
+
 }
 
 __attribute__((stdcall))
