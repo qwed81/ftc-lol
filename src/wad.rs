@@ -44,6 +44,16 @@ impl WadEntry {
     }
 }
 
+pub fn print_entries(wad: &[u8]) {
+    let header = read_header(wad).unwrap();
+    for i in 0..(header.entry_count as usize) {
+        let entry = read_entry(wad, i).unwrap();
+        let offset = entry.offset;
+        let len = entry.len;
+        println!("offset: {}, len: {}", offset, len);
+    }
+}
+
 // returns the bytes for just the header
 pub fn slice_header(wad: &[u8]) -> &[u8] {
     &wad[0..HEADER_LEN]
@@ -60,12 +70,9 @@ pub fn read_entry_data<'a>(wad: &'a [u8], entry: &'a WadEntry) -> Result<&'a [u8
         return Err(());
     }
 
-    // make sure the data will not overflow isize when offset (saftey of ptr offset)
-    assert!((entry.len as usize + wad.as_ptr() as usize) < isize::MAX as usize);
-    Ok(unsafe {
-        let data_ptr = wad.as_ptr().offset(entry.len as isize);
-        slice::from_raw_parts(data_ptr, entry.len as usize)
-    })
+    let offset = entry.offset as usize;
+    let len = entry.len as usize;
+    Ok(&wad[offset..offset + len])
 }
 
 pub fn read_entry<'a>(wad: &'a [u8], index: usize) -> Result<&'a WadEntry, ()> {

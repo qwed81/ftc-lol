@@ -164,12 +164,10 @@ impl<'a> SegmentTableBuilder<'a> {
         for i in 0..self.files.len() {
             // on the first time replace header segment_list_offset 
             // with the offset to the start of this table
-            if i == 0 {
-                let index = file_header_offsets[i] + 4;
-                let offset = buf.len();
-                set_u32(&mut buf, offset as u32, index);
-                entry_table_offsets.push(offset);
-            }
+            let index = file_header_offsets[i] + 4;
+            let offset = buf.len();
+            set_u32(&mut buf, offset as u32, index);
+            entry_table_offsets.push(offset);
 
             let file = &self.files[i];
             for segment in &file.segments {
@@ -225,10 +223,10 @@ impl<'a> SegmentTableBuilder<'a> {
             for segment in &file.segments {
                 match segment {
                     &SegmentReplace::ModSegment { start, data } => {
-                        println!("Replace mod: start: {} len: {}", start, data.len());
+                        println!("Replace mod: start: {:x} len: {}", start, data.len());
                     }
                     &SegmentReplace::GameSegment { start, len, data_off } => {
-                        println!("Replace game: start: {} off: {} len: {}", start, data_off, len);
+                        println!("Replace game: start: {:x} off: {:x} len: {}", start, data_off, len);
                     }
                 }
             }

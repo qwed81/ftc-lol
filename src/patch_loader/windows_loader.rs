@@ -45,6 +45,8 @@ const TIME_BEFORE_MOD_POLL_FAIL: Duration = Duration::from_secs(20);
 const REQUIRED_PROCESS_PERMS: u32 = PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION;
 
 const RESERVE_ADDR: ExPtr = 0x4020_0000;
+const STACK_ADDR: ExPtr = 0x4500_0000;
+const SEG_TABLE_ADDR: ExPtr = 0x4700_0000;
 
 #[derive(Debug, Clone, Copy)]
 struct ThreadContextArgs {
@@ -98,9 +100,11 @@ impl PatchLoader {
             load_segment(elf_file, header, &mut self.proc, mem_start, &mut zero_buffer);
         }
 
-        let stack_addr = 0x0420_0000;
         let stack_len = 10 * 4096;
-        self.proc.allocate_stack(stack_addr, stack_len)?;
+        self.proc.allocate_mem(STACK_ADDR, stack_len)?;
+
+        self.proc.allocate_mem(SEG_TABLE_ADDR, segment_table.len() as u32)?;
+        self.proc.mem_write_direct(SEG_TABLE_ADDR, segment_table)?;
 
         let resolve = |name: &str| -> ExPtr {
             let offset = elf_util::get_sym_offset(&elf, name);
@@ -110,13 +114,18 @@ impl PatchLoader {
             }
         };
 
+        let seg_tab_addr_addr = resolve("arg_seg_table_addr");
+        self.proc.mem_write_direct(seg_tab_addr_addr, &SEG_TABLE_ADDR.to_le_bytes())?;
+
         // constants defined in boostrap.s of the
         let thread_args = ThreadContextArgs {
-            ret_addr_addr: resolve(".ret_addr"),
-            restore_esp_addr: resolve(".restore_esp"),
-            restore_ebp_addr: resolve(".restore_ebp"),
+            ret_addr_addr: resolve("ret_addr"),
+            restore_esp_addr: resolve("restore_esp"),
+            restore_ebp_addr: resolve("restore_ebp"),
             start_addr: resolve("_start"),
-            new_esp: stack_addr,
+            // the stack grows down, so we have to start at the end of the
+            // memory segment
+            new_esp: STACK_ADDR + stack_len,
         };
 
         self.proc.change_thread_context(thread_handle, &thread_args)?;
@@ -346,7 +355,7 @@ impl Process {
         Ok(thread_handle)
     }
 
-    fn allocate_stack(&self, addr: ExPtr, len: ExLen) -> Result<(), ()> {
+    fn allocate_mem(&self, addr: ExPtr, len: ExLen) -> Result<(), ()> {
         let alloc = unsafe {
             memoryapi::VirtualAllocEx(self.h_proc, addr as *mut c_void,
                 len as usize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE)
@@ -354,7 +363,7 @@ impl Process {
 
         if alloc.is_null() {
             let err = unsafe { errhandlingapi::GetLastError() }; 
-            println!("could allocate stack, error: {}", err);
+            println!("Could not allocate mem at: {:x}, error: {}", addr, err);
             return Err(());
         }
 

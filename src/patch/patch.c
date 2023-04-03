@@ -25,15 +25,16 @@ static void log_int(void* log_handle, uint32_t val);
 static void log_wstr(void* log_handle, const WCHAR* msg);
 static uint32_t str_len(const char* str, uint32_t max);
 static bool str_eq(const char* a, const char* b);
+static bool wstr_eq(const WCHAR* a, const WCHAR* b);
 static bool prefixes_str(const char* prefix, const char* str);
 
-static bool can_read_page(void* addr);
 static void* find_mem_pattern(void* begin, uint32_t search_len, const char* pattern);
 
 typedef struct BootstrapData {
     void* arg_kernel32;
     void* arg_lol_module;
     void* arg_swap_return;
+    void* arg_seg_table_addr;
 
     uint32_t var_call_count;
     void* var_expected_return_addr;
@@ -52,8 +53,8 @@ typedef struct FileReplaceHeader {
 	char name_start[4];
 } FileReplaceHeader;
 
-#define MOD_SEGMENT = 0
-#define GAME_SEGMENT = 1
+#define MOD_SEGMENT 0
+#define GAME_SEGMENT 1
 
 typedef struct SegmentReplaceEntry {
 	uint32_t segment_type;
@@ -76,6 +77,7 @@ static BootstrapData* bs_data;
 __attribute__ ((no_caller_saved_registers, fastcall))
 void init(BootstrapData* data) {
     kernel32_addr = data->arg_kernel32;
+    segment_table = data->arg_seg_table_addr;
     bs_data = data;
 
     log_handle = pre_hook_CreateFileA("C:\\Users\\josh\\Desktop\\log1.txt",
@@ -183,17 +185,18 @@ static uint32_t hash_handle(void* handle) {
 	return ((size_t)handle >> 4) % HEADER_MAP_LEN;
 }
 
+// Will permanently loop if table is filled, but the table should
+// never fill so it should be fine. Fix later if it is an issue
 static void map_header(void* handle, FileReplaceHeader* header) {
 	uint32_t hash = hash_handle(handle);
 	while (map[hash].handle != handle) {
 		if (map[hash].handle == NULL) {
-			return;
+            map[hash].handle = handle;
+            map[hash].header = header;
+            break;
 		}
 		hash = (hash + 1) % HEADER_MAP_LEN;
 	}
-
-	map[hash].handle = handle;
-	map[hash].header = header;
 }
 
 static FileReplaceHeader* get_header(void* handle) {
@@ -205,7 +208,7 @@ static FileReplaceHeader* get_header(void* handle) {
 		hash = (hash + 1) % HEADER_MAP_LEN;
 	}
 
-	return &map[hash].header;
+	return map[hash].header;
 }
 
 static int32_t valid_apply = 0;
@@ -236,7 +239,7 @@ static void* my_CreateFileA(const char* name, uint32_t access, uint32_t share, v
 
 	void* handle = post_hook_CreateFileA(name, access, share, security, creation, flags, template);
 	if (handle == NULL) {
-		return NULL;
+		return handle;
 	}
 
 	FileReplaceHeader* header = lookup_file(name);
@@ -244,8 +247,11 @@ static void* my_CreateFileA(const char* name, uint32_t access, uint32_t share, v
 		map_header(handle, header);
 		log_str(log_handle, "\nMapped file: ");
 		log_str(log_handle, name);
+        log_str(log_handle, ", Handle: ");
+        log_int(log_handle, (size_t)handle);
 	}
 
+    return handle;
 	/*
     if (str_eq(name, "DATA/FINAL/Champions/Nunu.wad.client")) {
         name = "C:/Users/josh/Desktop/cslol-manager/profiles/Default Profile/DATA/FINAL/Champions/Nunu.wad.client";
@@ -258,27 +264,105 @@ static void* my_CreateFileA(const char* name, uint32_t access, uint32_t share, v
     log_int(log_handle, bs_data->var_call_count);
 	*/
 
-    return handle;
+}
+
+static SegmentReplaceEntry* lookup_segment_replace(FileReplaceHeader* header, uint32_t file_off, uint32_t len) {
+    // do a binary search on the sorted entries to find the segment to replace
+    uint32_t entry_count = header->segent_list_entry_count;
+    SegmentReplaceEntry* start = (SegmentReplaceEntry*)(segment_table + header->segment_list_offset);
+    for (int i = 0; i < entry_count; i += 1) {
+        SegmentReplaceEntry* entry = &start[i];
+        if (entry->start == file_off) {
+            if (entry->len != len) {
+                log_str(log_handle, "\nSame interval start with different lengths. file: ");
+                log_str(log_handle, header->name_start);
+                log_str(log_handle, " Entry index: ");
+                log_int(log_handle, i);
+                return NULL;
+            }
+            return entry;
+        }
+    }
+
+    return NULL;
 }
 
 __attribute__((stdcall))
 static uint32_t my_ReadFile(void* handle, void* buffer, uint32_t bytes_to_read, uint32_t* bytes_read, void* lp_overlapped) {
 	FileReplaceHeader* header = get_header(handle);
-
 	// this file does not need to be replaced, give what it asked for
 	if (header == NULL) {
     	return post_hook_ReadFile(handle, buffer, bytes_to_read, bytes_read, lp_overlapped);
 	}
 
+    // Windows doesn't have GetFilePointer for some reason
+    uint32_t file_off = SetFilePointer(handle, 0, NULL, FILE_CURRENT);
+    log_str(log_handle, "\nReading from mapped file, file pointer: ");
+    log_int(log_handle, file_off);
 
+    SegmentReplaceEntry* seg = lookup_segment_replace(header, file_off, bytes_to_read);
+    if (seg == NULL) {
+        log_str(log_handle, "\nCould not find interval of mapped file: ");
+        log_str(log_handle, header->name_start);
+        return post_hook_ReadFile(handle, buffer, bytes_to_read, bytes_read, lp_overlapped);
+    }
+
+    if (seg->segment_type == GAME_SEGMENT) {
+        // read from the game file at a different offset
+        SetFilePointer(handle, seg->data_off, NULL, FILE_START);
+        uint32_t result = post_hook_ReadFile(handle, buffer, bytes_to_read, bytes_read, lp_overlapped);
+        
+        // reset the pointer so it can read to the correct spot again
+        SetFilePointer(handle, seg->start + seg->len, NULL, FILE_START);
+        return result;
+    } 
+    else if (seg->segment_type == MOD_SEGMENT) {
+        char* data = segment_table + seg->data_off;
+        log_str(log_handle, "\nReading from mod: ");
+        log_int(log_handle, (size_t)data);
+        log_str(log_handle, " len: ");
+        log_int(log_handle, (size_t)bytes_to_read);
+
+        // mem copy the data to the from our mod to their buffer
+        for (uint32_t i = 0; i < bytes_to_read; i += 1) {
+            ((char*)buffer)[i] = data[i];
+        }
+
+        // the operation succeeded
+        *bytes_read = bytes_to_read;
+        SetFilePointer(handle, seg->start + seg->len, NULL, FILE_CURRENT);
+        return 1;
+    }
+
+    return post_hook_ReadFile(handle, buffer, bytes_to_read, bytes_read, lp_overlapped);
+}
+
+// wstr_buf must be 2x the length of str
+static void convert_to_wstr(char* str, WCHAR* wstr_buf) {
+    uint32_t len = str_len(str, 1000) + 1;
+    for (uint32_t i = 0; i < len; i += 1) {
+        wstr_buf[i * 2] = str[i];
+        wstr_buf[i * 2 + 1] = str[i + 1];
+    }
 }
 
 __attribute__((stdcall))
 static void* my_CreateFileW(const WCHAR* name, uint32_t access, uint32_t share, void* security,
     uint32_t creation, uint32_t flags, void* template) {
 
-    // log_wstr(log_handle, L"\ncreate file W: ");
-    // log_wstr(log_handle, name);
+    log_str(log_handle, "\nCreateFileW: ");
+    log_wstr(log_handle, name);
+
+    // turn off soft repair
+    WCHAR buf[1000];
+    convert_to_wstr("C:\\Riot Games\\League of Legends\\Game/../SOFT_REPAIR", buf);
+    if (wstr_eq(name, buf)) {
+        log_str(log_handle, "\nPrevented repairing game files");
+
+        // swap out the name of the file that they are trying to create
+        convert_to_wstr("C:\\Riot Games\\League of Legends\\Game/../SOFT_REPAIR_REPLACE", buf);
+        return post_hook_CreateFileW(buf, access, share, security, creation, flags, template);
+    }
 
     return post_hook_CreateFileW(name, access, share, security, creation, flags, template);
 }

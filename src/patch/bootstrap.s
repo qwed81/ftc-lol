@@ -3,15 +3,16 @@ extern init
 section .data
 ; will be initialized on program load
 	_context	dd	0	; scratch variable
-	.ret_addr	dd	0	; where to jmp back to
-	.restore_esp	dd	0
-	.restore_ebp	dd	0	
+	ret_addr	dd	0	; where to jmp back to
+	restore_esp	dd	0
+	restore_ebp	dd	0	
 
 ; these are passed to the c program, as a pointer to a structure
 ; therefore order matters
     arg_kernel32  dd  0
     arg_lol_module     dd 0
     arg_swap_return    dd 0
+    arg_seg_table_addr   dd  0
 
     var_call_count          dd 0
     var_expected_return_addr    dd 0
