@@ -1,5 +1,4 @@
 use std::mem;
-use std::slice;
 
 // HeaderV3 defined by lol
 #[allow(unused)]
