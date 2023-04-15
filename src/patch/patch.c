@@ -23,6 +23,7 @@ static void* apply_jump_fn_hook(void* new_func, void* addr);
 static void log_str(void* log_handle, const char* msg);
 static void log_int(void* log_handle, uint64_t val);
 static void log_wstr(void* log_handle, const WCHAR* msg);
+static void join_str(const char* str1, const char* str2, char* buf, uint32_t buf_len);
 static uint32_t str_len(const char* str, uint32_t max);
 static bool str_eq(const char* a, const char* b);
 static bool wstr_eq(const WCHAR* a, const WCHAR* b);
@@ -35,6 +36,7 @@ typedef struct BootstrapData {
     void* arg_lol_module;
     void* arg_swap_return;
     void* arg_seg_table_addr;
+    const char* arg_path_root;
 
     uint64_t var_call_count;
     void* var_expected_return_addr;
@@ -74,7 +76,13 @@ void init(BootstrapData* data) {
     segment_table = data->arg_seg_table_addr;
     bs_data = data;
 
-    log_handle = pre_hook_CreateFileA("C:\\Users\\josh\\Desktop\\log1.txt",
+    char path_buf[1024];
+    for (int i = 0; i < 1024; i += 1) {
+        path_buf[i] = 0;
+    }
+    join_str(data->arg_path_root, "/log.txt", path_buf, 1024);
+
+    log_handle = pre_hook_CreateFileA(path_buf,
        GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ,
        NULL, CREATE_ALWAYS, FILE_FLAG_WRITE_THROUGH, NULL);
 
@@ -233,15 +241,6 @@ static void* my_CreateFileA(const char* name, uint32_t access, uint32_t share, v
         }
     }
 
-    /*
-    if (str_eq(name, "DATA/FINAL/Champions/Nunu.wad.client")) {
-        name = "C:/Users/josh/Desktop/cslol-manager/profiles/Default Profile/DATA/FINAL/Champions/Nunu.wad.client";
-    } 
-    else if (str_eq(name, "DATA/FINAL/UI.wad.client")) {
-        name = "C:/Users/josh/Desktop/cslol-manager/profiles/Default Profile/DATA/FINAL/UI.wad.client";
-    }
-    */
-
 	void* handle = post_hook_CreateFileA(name, access, share, security, creation, flags, template);
 	if (handle == NULL) {
 		return handle;
@@ -288,11 +287,12 @@ static uint32_t my_ReadFile(void* handle, void* buffer, uint32_t bytes_to_read, 
     	return post_hook_ReadFile(handle, buffer, bytes_to_read, bytes_read, lp_overlapped);
 	}
 
-    // Windows doesn't have GetFilePointer for some reason
+    // Windows doesn't have GetFilePointer for some reason, but this works
     uint32_t file_off = SetFilePointer(handle, 0, NULL, FILE_CURRENT);
+    /*
     log_str(log_handle, "\nReading from mapped file, file pointer: ");
     log_int(log_handle, file_off);
-
+    */
     SegmentReplaceEntry* seg = lookup_segment_replace(header, file_off, bytes_to_read);
     if (seg == NULL) {
         log_str(log_handle, "\nCould not find interval of mapped file: ");
@@ -311,10 +311,12 @@ static uint32_t my_ReadFile(void* handle, void* buffer, uint32_t bytes_to_read, 
     } 
     else if (seg->segment_type == MOD_SEGMENT) {
         char* data = segment_table + seg->data_off;
+        /*
         log_str(log_handle, "\nReading from mod: ");
         log_int(log_handle, (size_t)data);
         log_str(log_handle, " len: ");
         log_int(log_handle, (size_t)bytes_to_read);
+        */
 
         // mem copy the data to the from our mod to their buffer
         for (uint32_t i = 0; i < bytes_to_read; i += 1) {
@@ -478,6 +480,27 @@ static void log_int(void* log_handle, uint64_t val) {
     }
 
     log_str(log_handle, buf);
+}
+
+// joins the two strings together and trucates based on the buf_len
+static void join_str(const char* str1, const char* str2, char* buf, uint32_t buf_len) {
+    uint32_t str1_len = str_len(str1, buf_len);
+    uint32_t str2_len = str_len(str2, buf_len);
+
+    uint32_t i = 0;
+    while (i < str1_len) {
+        buf[i] = str1[i];
+        i += 1;
+    }
+
+    uint32_t j = 0;
+    while (i < buf_len && j < str2_len) {
+        buf[i] = str2[j];
+        i += 1;
+        j += 1;
+    }
+
+    buf[buf_len - 1] = '\0';
 }
 
 static void log_wstr(void* log_handle, const WCHAR* msg) {

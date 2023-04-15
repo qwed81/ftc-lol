@@ -11,10 +11,11 @@ section .data
 
 ; these are passed to the c program, as a pointer to a structure
 ; therefore order matters
-    arg_kernel32  dq  0
+    arg_kernel32  dq  0 ; must be the first item in the struct
     arg_lol_module     dq 0
     arg_swap_return    dq 0
     arg_seg_table_addr   dq  0
+    arg_path_root   dq  0
 
     var_call_count          dq 0
     var_expected_return_addr    dq 0
@@ -30,6 +31,8 @@ section .data
     scratch2    dq 0     
     scratch3    dq 0     
 
+    path_root_buf   times 1024 db 0         
+
 section .start alloc write exec align=8
 	global _start
 
@@ -42,6 +45,11 @@ _start:
 	mov		[rsp + 24], rdx
 
 	call	rwx_get_runtime_offset ; moves the value of runtime_offset into eax
+
+    ; move a pointer to path_root_buf into path_root
+    lea     rcx, [rax - rwx_runtime_offset + path_root_buf]
+    mov     [rax - rwx_runtime_offset + arg_path_root], rcx
+
     mov     rcx, [rax - rwx_runtime_offset + ret_addr] ; moves ret addr into rcx
     mov     [rax - rwx_runtime_offset + .jmp_back_to], rcx ; mov ret addr into .jmp_back_to
 

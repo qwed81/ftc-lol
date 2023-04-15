@@ -14,7 +14,7 @@ async fn main() {
     let mut loader = PatchLoader::wait_can_patch(lol_path.as_bytes()).await.unwrap();
     loader.freeze_process().unwrap();
 
-    loader.load_and_resume(&elf_file, &[b's', b'e', b'g', b'\0']).unwrap();
+    loader.load_and_resume(&elf_file, b"target/debug", b"seg\0").unwrap();
 
     println!("done loading!");
 }

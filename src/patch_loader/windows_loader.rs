@@ -81,8 +81,10 @@ impl PatchLoader {
         Ok(())
     }
 
-    pub fn load_and_resume(mut self, elf_file: &[u8], segment_table: &[u8]) -> Result<(), ()> {
+    pub fn load_and_resume(mut self, elf_file: &[u8], cwd: &[u8], segment_table: &[u8]) -> Result<(), ()> {
         assert!(self.thread_handle.is_some());
+        assert!(cwd.len() < 1024);
+
         let thread_handle = self.thread_handle.unwrap();
 
         let elf = Elf::parse(&elf_file).unwrap();
@@ -117,6 +119,9 @@ impl PatchLoader {
 
         let seg_tab_addr_addr = resolve("arg_seg_table_addr");
         self.proc.mem_write_direct(seg_tab_addr_addr, &SEG_TABLE_ADDR.to_le_bytes())?;
+
+        let path_root_buf_addr = resolve("path_root_buf");
+        self.proc.mem_write_direct(path_root_buf_addr, cwd)?;
 
         // constants defined in boostrap.s of the
         let thread_args = ThreadContextArgs {
