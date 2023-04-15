@@ -4,13 +4,13 @@
 #include <stdbool.h>
 
 // hook functions
-__attribute__((stdcall))
+__attribute__((ms_abi))
 static void* my_CreateFileW(const WCHAR* name, uint32_t access, uint32_t share, void* security, uint32_t creation, uint32_t flags, void* template);
 
-__attribute__((stdcall))
+__attribute__((ms_abi))
 static void* my_CreateFileA(const char* name, uint32_t access, uint32_t share, void* security, uint32_t creation, uint32_t flags, void* template);
 
-__attribute__((stdcall))
+__attribute__((ms_abi))
 static uint32_t my_ReadFile(void* handle, void* buffer, uint32_t bytes_to_read, uint32_t* bytes_read, void* lp_overlapped);
 
 static void* log_handle;
@@ -21,7 +21,7 @@ static ReadFileType post_hook_ReadFile;
 static void* apply_jump_fn_hook(void* new_func, void* addr);
 
 static void log_str(void* log_handle, const char* msg);
-static void log_int(void* log_handle, uint32_t val);
+static void log_int(void* log_handle, uint64_t val);
 static void log_wstr(void* log_handle, const WCHAR* msg);
 static uint32_t str_len(const char* str, uint32_t max);
 static bool str_eq(const char* a, const char* b);
@@ -36,7 +36,7 @@ typedef struct BootstrapData {
     void* arg_swap_return;
     void* arg_seg_table_addr;
 
-    uint32_t var_call_count;
+    uint64_t var_call_count;
     void* var_expected_return_addr;
     void* var_original_jump_addr;
     void* var_fn_ptr_addr;
@@ -68,13 +68,7 @@ static void* kernel32_addr;
 static void* segment_table;
 static BootstrapData* bs_data;
 
-// compiler is not doing what i want when static const char*, not sure why
-// but this works :)
-#define FILTER_EXPECTED_RETURN "68 A0 02 00 00 E8 ?? ?? ?? ?? 83 C4 50"
-// #define FILTER_FN "74 02 FF E0 8B 44 24 04 85 C0 75 3E"
-#define FILTER_FN "A1 ?? ?? ?? ?? 85 C0 74 ?? 3D ?? ?? ?? ?? 74 02 FF E0 8B 44 24"
-
-__attribute__ ((no_caller_saved_registers, fastcall))
+__attribute__ ((no_caller_saved_registers, vectorcall))
 void init(BootstrapData* data) {
     kernel32_addr = data->arg_kernel32;
     segment_table = data->arg_seg_table_addr;
@@ -85,7 +79,6 @@ void init(BootstrapData* data) {
        NULL, CREATE_ALWAYS, FILE_FLAG_WRITE_THROUGH, NULL);
 
     log_str(log_handle, "Log file working");
-
     log_str(log_handle, "\nlol module at: ");
     log_int(log_handle, (size_t)data->arg_lol_module);
 
@@ -112,9 +105,18 @@ void init(BootstrapData* data) {
         return;
     }
 
+    log_str(log_handle, "\ninit successful");
 }
 
-#define SEARCH_LEN 10000 * 4096
+// estimated length of the entire LOL module, can be shortened
+// if performance becomes a problem
+#define SEARCH_LEN 0x0FFFF000
+
+// compiler is not doing what i want when static const char*, not sure why
+// but this works :)
+#define FILTER_EXPECTED_RETURN "B9 A0 02 00 00 48 89 5C 24 20 E8"
+#define FILTER_FN "48 8B 05 ?? ?? ?? ?? 48 85 C0 74 ?? 4C 8D 0D"
+
 static uint32_t apply_swap_return_hook() {
     void* er = find_mem_pattern(bs_data->arg_lol_module, SEARCH_LEN, FILTER_EXPECTED_RETURN);
     if (er == NULL) {
@@ -122,7 +124,7 @@ static uint32_t apply_swap_return_hook() {
         return 1;
     }
 
-    bs_data->var_expected_return_addr = er + 0xA; // get the actual value after finding pattern
+    bs_data->var_expected_return_addr = er + 0xF; // get the actual value after finding pattern
 
     void* fn = find_mem_pattern(bs_data->arg_lol_module, SEARCH_LEN, FILTER_FN);
     if (fn == NULL) {
@@ -130,8 +132,11 @@ static uint32_t apply_swap_return_hook() {
         return 1;
     }
 
-    bs_data->var_original_jump_addr = fn + 0x12;
-    bs_data->var_fn_ptr_addr = *(void**)(fn + 0x1); // follow the pointer to get the heap value
+    int32_t original_jump_offset = *(int32_t*)(fn + 0x3A);
+    bs_data->var_original_jump_addr = fn + original_jump_offset + 0x39 + 0x5;
+
+    size_t rip_offset = *(uint32_t*)(fn + 0x3);
+    bs_data->var_fn_ptr_addr =  fn + 7 + rip_offset;
 
     // swap the fn pointer on the stack to my fn
     *(void**)bs_data->var_fn_ptr_addr = bs_data->arg_swap_return;
@@ -212,7 +217,7 @@ static FileReplaceHeader* get_header(void* handle) {
 }
 
 static int32_t valid_apply = 0;
-__attribute__((stdcall))
+__attribute__((ms_abi))
 static void* my_CreateFileA(const char* name, uint32_t access, uint32_t share, void* security,
     uint32_t creation, uint32_t flags, void* template) {
 
@@ -222,20 +227,20 @@ static void* my_CreateFileA(const char* name, uint32_t access, uint32_t share, v
         log_str(log_handle, "\nApplying create file A");
         uint32_t result = apply_swap_return_hook();
         if (result != 0) {
-            log_str(log_handle, "\nCould not apply swap hook");
-            valid_apply = 2;
+            log_str(log_handle, "\nCould not apply swap hook, retrying on next file");
         } else {
             valid_apply = 1;
         }
     }
 
-    // there was an error applying, just do what the function was supposed to do
-    // like the hook was never applied
-    if (valid_apply == 2) {
-        log_str(log_handle, "\nInvalid apply: ");
-        log_str(log_handle, name);
-        return post_hook_CreateFileA(name, access, share, security, creation, flags, template);
+    /*
+    if (str_eq(name, "DATA/FINAL/Champions/Nunu.wad.client")) {
+        name = "C:/Users/josh/Desktop/cslol-manager/profiles/Default Profile/DATA/FINAL/Champions/Nunu.wad.client";
+    } 
+    else if (str_eq(name, "DATA/FINAL/UI.wad.client")) {
+        name = "C:/Users/josh/Desktop/cslol-manager/profiles/Default Profile/DATA/FINAL/UI.wad.client";
     }
+    */
 
 	void* handle = post_hook_CreateFileA(name, access, share, security, creation, flags, template);
 	if (handle == NULL) {
@@ -252,18 +257,6 @@ static void* my_CreateFileA(const char* name, uint32_t access, uint32_t share, v
 	}
 
     return handle;
-	/*
-    if (str_eq(name, "DATA/FINAL/Champions/Nunu.wad.client")) {
-        name = "C:/Users/josh/Desktop/cslol-manager/profiles/Default Profile/DATA/FINAL/Champions/Nunu.wad.client";
-    } 
-    else if (str_eq(name, "DATA/FINAL/UI.wad.client")) {
-        name = "C:/Users/josh/Desktop/cslol-manager/profiles/Default Profile/DATA/FINAL/UI.wad.client";
-    }
-
-    log_str(log_handle, "\ncall count is: ");
-    log_int(log_handle, bs_data->var_call_count);
-	*/
-
 }
 
 static SegmentReplaceEntry* lookup_segment_replace(FileReplaceHeader* header, uint32_t file_off, uint32_t len) {
@@ -287,7 +280,7 @@ static SegmentReplaceEntry* lookup_segment_replace(FileReplaceHeader* header, ui
     return NULL;
 }
 
-__attribute__((stdcall))
+__attribute__((ms_abi))
 static uint32_t my_ReadFile(void* handle, void* buffer, uint32_t bytes_to_read, uint32_t* bytes_read, void* lp_overlapped) {
 	FileReplaceHeader* header = get_header(handle);
 	// this file does not need to be replaced, give what it asked for
@@ -341,17 +334,13 @@ static uint32_t my_ReadFile(void* handle, void* buffer, uint32_t bytes_to_read, 
 static void convert_to_wstr(char* str, WCHAR* wstr_buf) {
     uint32_t len = str_len(str, 1000) + 1;
     for (uint32_t i = 0; i < len; i += 1) {
-        wstr_buf[i * 2] = str[i];
-        wstr_buf[i * 2 + 1] = str[i + 1];
+        wstr_buf[i] = str[i];
     }
 }
 
-__attribute__((stdcall))
+__attribute__((ms_abi))
 static void* my_CreateFileW(const WCHAR* name, uint32_t access, uint32_t share, void* security,
     uint32_t creation, uint32_t flags, void* template) {
-
-    log_str(log_handle, "\nCreateFileW: ");
-    log_wstr(log_handle, name);
 
     // turn off soft repair
     WCHAR buf[1000];
@@ -382,7 +371,11 @@ static void* apply_jump_fn_hook(void* new_func, void* addr) {
     // copy the jump instruction 5 bytes down
     *(uint64_t*)(new_addr) = *(uint64_t*)addr;
 
-    // change their old jump instruction to my function
+    // because its using a relative jump, we need to reset the value
+    // in the jump to use it's new position
+    *(int32_t*)(new_addr + 2) -= 5;
+
+    // change jump instruction to my function
     int32_t offset_jump = (int32_t)((void*)new_func - addr - 5);
     *(uint8_t*)(addr) = 0xE9;
     *(int32_t*)(addr + 1) = offset_jump;
@@ -465,13 +458,13 @@ static void log_str(void* log_handle, const char* msg) {
     WriteFile(log_handle, msg, len, &amt_written, NULL);
 }
 
-static void log_int(void* log_handle, uint32_t val) {
-    char buf[11]; 
-    buf[10] = '\0';
+static void log_int(void* log_handle, uint64_t val) {
+    char buf[19]; // 16 + 2 for 0x + 1 for \0 
+    buf[18] = '\0';
     buf[0] = '0';
     buf[1] = 'x';
 
-    for (int i = 9; i > 1; i -= 1) {
+    for (int i = 17; i > 1; i -= 1) {
         uint32_t single = val & 0xF;
         char c;
         if (single <= 9) {
@@ -592,7 +585,7 @@ uint32_t scan_segment(char* mem, uint32_t mem_len, char* buf, bool* skip, uint32
     return (uint32_t)-1;
 }
 
-#define PAEG_LEN 4096
+#define PAGE_LEN 0x1000
 
 // returns the beginning of the memory pattern, or NULL if not found in the length
 // returns -1 casted to a pointer if an error happens with pattern interpretation 
@@ -605,38 +598,39 @@ static void* find_mem_pattern(void* start, uint32_t search_len, const char* patt
 
     int32_t result = interpret_pattern(pattern, buf, skip, &buf_len);
     if (result != 0) {
-        log_str(log_handle, "Could not interpret pattern");
+        log_str(log_handle, "\nCould not interpret pattern");
         return (void*)-1;
     }
 
-    if (PAEG_LEN < PATTERN_BUF_LEN) {
-        log_str(log_handle, "Segment length is less than pattern length");
+    if (PAGE_LEN < PATTERN_BUF_LEN) {
+        log_str(log_handle, "\nSegment length is less than pattern length");
         return (void*)-1;
     }
 
-    if ((size_t)start % PAEG_LEN != 0) {
-        log_str(log_handle, "Start not on page boundary");
+    if ((size_t)start % PAGE_LEN != 0) {
+        log_str(log_handle, "\nStart not on page boundary");
         return (void*)-1;
     }
 
-    if (search_len % PAEG_LEN != 0) {
-        log_str(log_handle, "Search length not on page boundary");
+    if (search_len % PAGE_LEN != 0) {
+        log_str(log_handle, "\nSearch length not on page boundary");
         return (void*)-1;
     }
 
     char* current = start;
     while ((void*)current < start + search_len) {
 
-        char mem_buf[PAEG_LEN];
+        char mem_buf[PAGE_LEN];
         uint32_t num_read;
-        uint32_t can_read = ReadProcessMemory(CURRENT_PROCESS, current, mem_buf, sizeof(mem_buf), &num_read);
-        if (can_read && num_read == PAEG_LEN) {
-            uint32_t result = scan_segment(current, PAEG_LEN, buf, skip, buf_len);
+        uint32_t can_read = ReadProcessMemory(CURRENT_PROCESS, current, mem_buf, PAGE_LEN, &num_read);
+
+        if (can_read && num_read == PAGE_LEN) {
+            uint32_t result = scan_segment(current, PAGE_LEN, buf, skip, buf_len);
             if (result != (uint32_t)-1) {
                 return current + result;
             }
         }
-        current += PAEG_LEN;
+        current += PAGE_LEN;
     }
 
     return NULL;

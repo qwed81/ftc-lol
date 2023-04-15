@@ -1,47 +1,17 @@
-use super::{ExLen, ElfOff, MemProt};
+struct PatchLoader;
 
-pub struct Loader {
-
-}
-
-impl Loader {
-
-    pub async fn wait_spawn(process_file_name: &[u8]) -> Result<Loader, ()> {
-        _ = process_file_name;
+impl PatchLoader {
+    pub async fn wait_can_patch(_name: &[u8]) -> Result<PatchLoader, ()> {
         todo!();
     }
 
-    pub async fn wait_can_patch(&self) -> Result<(), ()> {
-        Ok(())
-    }
-
-    pub fn reserve_mem(&mut self, len: ExLen) -> Result<(), ()> {
-        _ = self;
-        _ = len;
+    pub fn freeze_process(&mut self) -> Result<(), ()> { 
         todo!();
     }
 
-    pub fn map_segment(&self, offset: ElfOff, len: ExLen) -> Result<(), ()> {
-        _ = offset;
-        _ = len;
-        todo!();
-    }
-
-    pub fn mem_write(&self, offset: ElfOff, src: &[u8]) -> Result<(), ()> {
-        _ = offset;
-        _ = src;
-        todo!();
-    }
-
-    pub(super) fn mem_protect(&self, offset: ElfOff, len: ExLen, prot: MemProt) -> Result<(), ()> {
-        _ = offset;
-        _ = len;
-        _ = prot;
-        todo!();
-    }
-
-    pub fn initialize_patch(self, resolve_symbol_offset: impl Fn(&'static str) -> ElfOff) -> Result<(), ()> {
-        _ = resolve_symbol_offset;
+    pub async fn load_and_resume(mut self, elf_file: &[u8], segment_table: &[u8]) -> Result<(), ()> {
         todo!();
     }
 }
+
+

@@ -5,11 +5,10 @@ use winapi::um::errhandlingapi;
 use winapi::um::tlhelp32::TH32CS_SNAPTHREAD;
 use winapi::um::tlhelp32::THREADENTRY32;
 use winapi::um::psapi;
-use winapi::um::winbase;
 use winapi::um::tlhelp32;
 use winapi::um::winnt::THREAD_ALL_ACCESS;
-use winapi::um::winnt::WOW64_CONTEXT;
-use winapi::um::winnt::WOW64_CONTEXT_FULL;
+use winapi::um::winnt::CONTEXT;
+use winapi::um::winnt::CONTEXT_FULL;
 use winapi::um::winnt::{
     PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE, PROCESS_QUERY_INFORMATION, MEM_RESERVE,
     MEM_COMMIT, PAGE_NOACCESS, PAGE_EXECUTE_READWRITE, PAGE_READONLY, PAGE_READWRITE, PAGE_EXECUTE_READ
@@ -28,6 +27,7 @@ use goblin::elf64::program_header::PT_LOAD;
 
 use tokio::time;
 
+use super::ElfLen;
 use super::{ExPtr, ExLen, MemProt, ElfOff};
 use super::elf_util::{self, LoadRange};
 
@@ -44,9 +44,10 @@ const TIME_BEFORE_MOD_POLL_FAIL: Duration = Duration::from_secs(20);
 
 const REQUIRED_PROCESS_PERMS: u32 = PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION;
 
-const RESERVE_ADDR: ExPtr = 0x4020_0000;
-const STACK_ADDR: ExPtr = 0x4500_0000;
-const SEG_TABLE_ADDR: ExPtr = 0x4700_0000;
+const BASE_ADDR: ExPtr = 0x7ffd_0000_0000;
+const RESERVE_ADDR: ExPtr = BASE_ADDR + 0x2200_0000;
+const STACK_ADDR: ExPtr = BASE_ADDR + 0x2500_0000;
+const SEG_TABLE_ADDR: ExPtr = BASE_ADDR + 0x3700_0000;
 
 #[derive(Debug, Clone, Copy)]
 struct ThreadContextArgs {
@@ -85,10 +86,10 @@ impl PatchLoader {
         let thread_handle = self.thread_handle.unwrap();
 
         let elf = Elf::parse(&elf_file).unwrap();
-        let LoadRange {mem_start, mem_end} = elf_util::get_load_range(&elf.program_headers);
+        let LoadRange {elf_start, elf_end} = elf_util::get_load_range(&elf.program_headers);
 
-        let total_needed = mem_end - mem_start;
-        self.proc.reserve_mem(total_needed).unwrap();
+        let total_needed = elf_end - elf_start;
+        self.proc.reserve_mem(total_needed as ExLen).unwrap();
 
         // load elf sections
         let mut zero_buffer = Vec::new();
@@ -97,13 +98,13 @@ impl PatchLoader {
                 continue;
             } 
 
-            load_segment(elf_file, header, &mut self.proc, mem_start, &mut zero_buffer);
+            load_segment(elf_file, header, &mut self.proc, elf_start, &mut zero_buffer);
         }
 
-        let stack_len = 10 * 4096;
-        self.proc.allocate_mem(STACK_ADDR, stack_len)?;
+        const STACK_LEN: ExLen = 10 * 4096;
+        self.proc.allocate_mem(STACK_ADDR, STACK_LEN)?;
 
-        self.proc.allocate_mem(SEG_TABLE_ADDR, segment_table.len() as u32)?;
+        self.proc.allocate_mem(SEG_TABLE_ADDR, segment_table.len().try_into().unwrap())?;
         self.proc.mem_write_direct(SEG_TABLE_ADDR, segment_table)?;
 
         let resolve = |name: &str| -> ExPtr {
@@ -125,7 +126,7 @@ impl PatchLoader {
             start_addr: resolve("_start"),
             // the stack grows down, so we have to start at the end of the
             // memory segment
-            new_esp: STACK_ADDR + stack_len,
+            new_esp: STACK_ADDR + STACK_LEN,
         };
 
         self.proc.change_thread_context(thread_handle, &thread_args)?;
@@ -144,7 +145,7 @@ impl Drop for PatchLoader {
 */
 
 #[repr(align(16))]
-struct AlignedContext(WOW64_CONTEXT);
+struct AlignedContext(CONTEXT);
 
 struct Process {
     pid: u32,
@@ -154,10 +155,10 @@ struct Process {
 
 impl Process {
 
-    fn get_offset_ptr(&self, offset: ExPtr) -> ElfOff {
+    fn get_offset_ptr(&self, offset: ElfOff) -> ExPtr {
         assert!(self.reserved.is_some());
         let base = self.reserved.unwrap();
-        base + offset
+        base + offset as ExPtr
     }
 
     async fn wait_can_patch(&self) -> Result<(), ()> {
@@ -243,7 +244,7 @@ impl Process {
         Ok(())
     }
 
-    fn map_segment(&self, offset: ElfOff, len: ExLen) -> Result<(), ()> {
+    fn map_segment(&self, offset: ElfOff, len: ElfLen) -> Result<(), ()> {
         let actual_addr = self.get_offset_ptr(offset) as *mut c_void;
         println!("map addr: {:x?} len: {}", actual_addr, len);
 
@@ -283,9 +284,9 @@ impl Process {
         Ok(())
     }
 
-    fn mem_protect(&self, offset: ElfOff, len: ExLen, prot: MemProt) -> Result<(), ()> {
+    fn mem_protect(&self, offset: ElfOff, len: ElfLen, prot: MemProt) -> Result<(), ()> {
         let actual_addr = self.get_offset_ptr(offset);
-        self.mem_protect_direct(actual_addr, len, prot)
+        self.mem_protect_direct(actual_addr, len as ExLen, prot)
     }
 
     fn mem_protect_direct(&self, addr: ExPtr, len: ExLen, prot: MemProt) -> Result<(), ()> {
@@ -372,29 +373,29 @@ impl Process {
 
     fn change_thread_context(&self, thread_handle: *mut c_void, args: &ThreadContextArgs) -> Result<(), ()> {
         let mut context: AlignedContext = unsafe { mem::zeroed() };
-        context.0.ContextFlags = WOW64_CONTEXT_FULL;
+        context.0.ContextFlags = CONTEXT_FULL;
         let context_result = unsafe {
-            winbase::Wow64GetThreadContext(thread_handle, &mut context.0)
+            processthreadsapi::GetThreadContext(thread_handle, &mut context.0)
         };
         
         if context_result == 0 {
             let err = unsafe { errhandlingapi::GetLastError() };
-            println!("could not get thread context, error is: {}", err);
+            println!("Could not get thread context, error is: {}", err);
             return Err(());
         }
 
         // load the old values into memory so they can be restored
-        self.mem_write_direct(args.ret_addr_addr, &context.0.Eip.to_le_bytes())?;
-        self.mem_write_direct(args.restore_ebp_addr, &context.0.Ebp.to_le_bytes())?;
-        self.mem_write_direct(args.restore_esp_addr, &context.0.Esp.to_le_bytes())?;
+        self.mem_write_direct(args.ret_addr_addr, &context.0.Rip.to_le_bytes())?;
+        self.mem_write_direct(args.restore_ebp_addr, &context.0.Rbp.to_le_bytes())?;
+        self.mem_write_direct(args.restore_esp_addr, &context.0.Rsp.to_le_bytes())?;
 
         // set the new values
-        context.0.Ebp = args.new_esp;
-        context.0.Esp = args.new_esp;
-        context.0.Eip = args.start_addr;
+        context.0.Rbp = args.new_esp;
+        context.0.Rsp = args.new_esp;
+        context.0.Rip = args.start_addr;
 
         let context_result = unsafe {
-            winbase::Wow64SetThreadContext(thread_handle, &mut context.0)
+            processthreadsapi::SetThreadContext(thread_handle, &mut context.0)
         };
 
         if context_result == 0 {
@@ -416,15 +417,15 @@ impl Drop for Process {
 }
 */
 
-fn load_segment(file: &[u8], header: &ProgramHeader, process: &mut Process, mem_start: ExPtr, zero_buffer: &mut Vec<u64>) {
+fn load_segment(file: &[u8], header: &ProgramHeader, process: &mut Process, elf_start: ElfOff, zero_buffer: &mut Vec<u64>) {
     // the file memory is always less than vm memory range. The
     // difference in the range needs to be zeroed out, as specified by ELF file
     let f_range = header.file_range();
     let m_range = header.vm_range();
 
-    let copy_len: ExLen = f_range.len().try_into().unwrap();
+    let copy_len: ElfLen = f_range.len().try_into().unwrap();
     let total_len = m_range.len().try_into().unwrap();
-    let vm_offset = (m_range.start - mem_start as usize).try_into().unwrap();
+    let vm_offset = (m_range.start - elf_start as usize).try_into().unwrap();
     process.map_segment(vm_offset, total_len).unwrap();
 
     // write the actual data from the file into memory

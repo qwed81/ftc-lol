@@ -35,14 +35,14 @@ fn main() {
 fn build_windows(target: &Path) {
     let pd = "src/patch";
     let bootstrap_o = join(target, "bootstrap.o");
-    let cmd = format!("nasm -f elf32 -o {bootstrap_o} bootstrap.s");
+    let cmd = format!("nasm -f elf64 -o {bootstrap_o} bootstrap.s");
     execute(pd, cmd);
 
     let patch_o = join(target, "patch.o");
-    let cmd = format!("clang -c -fno-stack-protector -nostdlib -fPIC -target i386-unknown-linux-elf -Wall -o {patch_o} patch.c");
+    let cmd = format!("clang -c -fno-stack-protector -nostdlib -fPIC -target x86_64-unknown-linux-elf -Wall -o {patch_o} patch.c");
     execute(pd, cmd);
 
     // link the items together
-    let cmd = format!("clang -fuse-ld=lld -fPIE -nostdlib -target i386-unknown-linux-elf -o patch bootstrap.o patch.o");
+    let cmd = format!("clang -fuse-ld=lld -fPIE -nostdlib -target x86_64-unknown-linux-elf -o patch bootstrap.o patch.o");
     execute(target.to_str().unwrap(), cmd);
 }

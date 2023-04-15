@@ -4,8 +4,8 @@ use goblin::elf64::program_header::PT_LOAD;
 use super::{ElfOff, MemProt};
 
 pub struct LoadRange {
-    pub mem_start: ElfOff,
-    pub mem_end: ElfOff
+    pub elf_start: ElfOff,
+    pub elf_end: ElfOff
 }
 
 pub fn get_sym_offset(elf: &Elf, sym_name: &str) -> Option<ElfOff> {
@@ -60,5 +60,5 @@ pub fn get_load_range(headers: &[ProgramHeader]) -> LoadRange {
         .try_into()
         .unwrap();
 
-    LoadRange { mem_start, mem_end }
+    LoadRange { elf_start: mem_start, elf_end: mem_end }
 }

@@ -5,11 +5,18 @@ mod elf_util;
 #[cfg(target_arch="x86_64")]
 mod windows_loader;
 #[cfg(target_os="windows")]
-
 pub use windows_loader::PatchLoader as PatchLoader;
-type ExPtr = u32;
-type ExLen = u32;
+
+#[cfg(target_os="linux")]
+#[cfg(target_arch="x86_64")]
+mod linux_loader;
+#[cfg(target_os="linux")]
+pub use linux_loader::PatchLoader as PatchLoader;
+
+type ExPtr = u64;
+type ExLen = u64;
 type ElfOff = u32;
+type ElfLen = u32;
 
 #[derive(Debug, Clone, Copy)]
 enum MemProt {
@@ -18,23 +25,3 @@ enum MemProt {
     RX,
     RWX,
 }
-
-#[cfg(target_os="linux")]
-struct PatchLoader;
-
-#[cfg(target_os="linux")]
-impl PatchLoader {
-    pub async fn wait_can_patch(_name: &[u8]) -> Result<PatchLoader, ()> {
-        todo!();
-    }
-
-    pub fn freeze_process(&mut self) -> Result<(), ()> { 
-        todo!();
-    }
-
-    pub async fn load_and_resume(mut self, elf_file: &[u8], segment_table: &[u8]) -> Result<(), ()> {
-        todo!();
-    }
-}
-
-

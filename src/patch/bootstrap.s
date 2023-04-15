@@ -2,112 +2,125 @@ extern init
 
 section .data
 ; will be initialized on program load
-	_context	dd	0	; scratch variable
-	ret_addr	dd	0	; where to jmp back to
-	restore_esp	dd	0
-	restore_ebp	dd	0	
+; order matters
+	_context	dq	0	; scratch variable
+	ret_addr	dq	0	; where to jmp back to
+	restore_esp	dq	0
+	restore_ebp	dq	0	
+; end order matters
 
 ; these are passed to the c program, as a pointer to a structure
 ; therefore order matters
-    arg_kernel32  dd  0
-    arg_lol_module     dd 0
-    arg_swap_return    dd 0
-    arg_seg_table_addr   dd  0
+    arg_kernel32  dq  0
+    arg_lol_module     dq 0
+    arg_swap_return    dq 0
+    arg_seg_table_addr   dq  0
 
-    var_call_count          dd 0
-    var_expected_return_addr    dd 0
-    var_original_jump_addr      dd 0
-    var_fn_ptr_addr             dd 0
+    var_call_count          dq 0
+    var_expected_return_addr    dq 0
+    var_original_jump_addr      dq 0
+    var_fn_ptr_addr             dq 0
 ; end order matters
 
+; it is not safe to push items
+; to the stack while executing swap_return
+; because they might be relying on some values, so use these instead
+    scratch0    dq 0     
+    scratch1    dq 0     
+    scratch2    dq 0     
+    scratch3    dq 0     
 
-section .start alloc write exec align=4
+section .start alloc write exec align=8
 	global _start
 
 ; should be called with a new stack, as well as rax pointing to the context
 _start:
-	sub		esp, 16	; keep 16 byte aligned
-	mov		[esp], eax
-	mov		[esp + 4], ebx
-	mov		[esp + 8], ecx
-	mov		[esp + 12], edx
+	sub		rsp, 32	; keep 16 byte aligned
+	mov		[rsp], rax
+	mov		[rsp + 8], rbx
+	mov		[rsp + 16], rcx
+	mov		[rsp + 24], rdx
 
 	call	rwx_get_runtime_offset ; moves the value of runtime_offset into eax
-    mov     ecx, eax
+    mov     rcx, [rax - rwx_runtime_offset + ret_addr] ; moves ret addr into rcx
+    mov     [rax - rwx_runtime_offset + .jmp_back_to], rcx ; mov ret addr into .jmp_back_to
+
+    mov     rcx, rax ; save rwx_runtime_offset to rcx
 
 	call	locate_kernel32 ; moves the address of kernel32 into eax
-    mov     [ecx - rwx_runtime_offset + arg_kernel32], eax
+    mov     [rcx - rwx_runtime_offset + arg_kernel32], rax
 
     call    locate_lol_module ; moves to init agrs
-    mov     [ecx - rwx_runtime_offset + arg_lol_module], eax
+    mov     [rcx - rwx_runtime_offset + arg_lol_module], rax
 
-	lea		eax, [ecx - rwx_runtime_offset + swap_return] ; move the addr of swap_return for param
-    mov     [ecx - rwx_runtime_offset + arg_swap_return], eax
+	lea		rax, [rcx - rwx_runtime_offset + swap_return] ; move the addr of swap_return for param
+    mov     [rcx - rwx_runtime_offset + arg_swap_return], rax
 
     ; set ecx to the pointer to the init args struct
-    lea     ecx, [ecx - rwx_runtime_offset + arg_kernel32]
+    lea     rcx, [rcx - rwx_runtime_offset + arg_kernel32]
 	call 	init	; call the c code, will not change any registers (calling convention)
 
 	call	rwx_get_runtime_offset ; moves the value of runtime_offset into eax
+	add		rax, _context - rwx_runtime_offset ; actual addr of _context
 
-	mov		ebx, eax ; actual addr of .program_offset
-	add		eax, _context - rwx_runtime_offset ; actual addr of _context
-	add		ebx, .jmp_back - rwx_runtime_offset	; actual addr of jmp_back
+	mov 	rcx, [rsp] 	; original value of eax
+	mov		[rax], rcx ; move original eax into _context to be restored
 
-	mov 	ecx, [esp] 	; original value of eax
-	mov		[eax], ecx ; move original eax into restore_eax
+	; restore registers saved on stack
+	mov		rbx, [rsp + 8]
+	mov		rcx, [rsp + 16]
+	mov		rdx, [rsp + 24]
 
-	; to return with all of the registers restored, we need to
-	; write the jmp_back addr as the last instruction
-	; jmp_to - label - (jmp instr len) 
-	mov 	ecx, [eax + 4] ; jmp_to_addr
-	sub		ecx, ebx
-	sub		ecx, 5	; ecx contains offset to jump to
+    ; restore registers from the context given from the loader
+	mov		rsp, [rax + 16]
+	mov		rbp, [rax + 24]
 
-	mov		dl, 0xE9
-	mov		byte [ebx], dl	; rel jmp
-	mov		dword [ebx + 1], ecx
+    ; restore rax from its place at _context
+	mov		rax, [rax]  
 
-	; restore registers
-	mov		ebx, [esp + 4]
-	mov		ecx, [esp + 8]
-	mov		edx, [esp + 12]
+    ; the state is exactly as it was prior to changing anything
+    ; jump to whatever address is stored in jmp_back_to. This is needed because
+    ; we can not use any stack memory or registers because the state needs to be
+    ; restored to the exact state it was prior
+    jmp     QWORD [rel .jmp_back_to]
 
-	mov		esp, [eax + 8]
-	mov		ebp, [eax + 12]
-	mov		eax, [eax]
-
-	; jump back to where it came from, the state is the exact same
-.jmp_back:
+    ; we need to store the address to jump back to here, because it will be
+    ; jumped to by the previous instruction
+.jmp_back_to:
 	nop
 	nop
 	nop
 	nop
 	nop
+	nop
+    nop
+    nop
 
 ; go through the windows thread environment block to find the kernel32 module
 ; https://www.ired.team/offensive-security/code-injection-process-injection/finding-kernel32-base-and-function-addresses-in-shellcode
+; https://nytrosecurity.com/2019/06/30/writing-shellcodes-for-windows-x64/
 locate_kernel32:
-	mov eax, [fs:30h]		    ; Pointer to PEB (https://en.wikipedia.org/wiki/Win32_Thread_Information_Block)
-	mov eax, [eax + 0ch]		; Pointer to Ldr
-	mov eax, [eax + 14h]		; Pointer to InMemoryOrderModuleList
-	mov eax, [eax]				  ; this program's module
-	mov eax, [eax]				  ; ntdll module
-	mov eax, [eax -8h + 18h]	; kernel32.DllBase
-	ret
-
-locate_lol_module:
-	mov eax, [fs:30h]		    ; Pointer to PEB (https://en.wikipedia.org/wiki/Win32_Thread_Information_Block)
-	mov eax, [eax + 0ch]		; Pointer to Ldr
-	mov eax, [eax + 14h]		; Pointer to InMemoryOrderModuleList
-	mov eax, [eax - 8h + 18h]	; this program's module DllBase
+    xor rax, rax            ; reset rax
+    mov rax, [gs:rax + 60h] ; rax = PEB
+    mov rax, [rax + 18h]    ; rax = PEB->Ldr
+    mov rax, [rax + 20h]    ; rsi = PEB->Ldr.InMemOrder
+    mov rax, [rax]          ; this program's module
+    mov rax, [rax]          ; ntdll
+    mov rax, [rax + 20h]    ; kernel32 base address    
     ret
 
+locate_lol_module:
+    xor rax, rax            ; reset rax
+    mov rax, [gs:rax + 60h] ; rax = PEB
+    mov rax, [rax + 18h]    ; rax = PEB->Ldr
+    mov rax, [rax + 20h]    ; rsi = PEB->Ldr.InMemOrder
+    mov rax, [rax + 20h]    ; this program's base address
+    ret
 
 rwx_get_runtime_offset:
     call    runtime_offset
 rwx_runtime_offset:
-    pop     eax
+    pop     rax
     ret
 
 ; the game has a function pointer that is used while checking
@@ -123,53 +136,48 @@ section .text
 get_runtime_offset:
     call    runtime_offset
 runtime_offset:
-    pop     eax
+    pop     rax
     ret
 
 swap_return:
     ; eax was used for the jump, so it is free to use
-    push    ebx
-    push    ecx 
-    push    edx
-    push    esi
-
     ; returns actual address of runtime_offset into eax
     call    get_runtime_offset
 
-    mov     ebx, [eax - runtime_offset + var_expected_return_addr] ; ebx is the expected_return
-    mov     ecx, esp ; initialzie at the bottom of the stack (4 down is first return addr)
-    mov     esi, esp
-    add     esi, 200 ; 10 possible addresses down the stack
+    ; save the registers to be restored later
+    mov     [rax - runtime_offset + scratch0], rbx
+    mov     [rax - runtime_offset + scratch1], rcx
+    mov     [rax - runtime_offset + scratch2], rdx
+    mov     [rax - runtime_offset + scratch3], rsi
+
+    mov     rbx, [rax - runtime_offset + var_expected_return_addr] ; ebx is the expected_return
+    mov     rcx, rsp ; initialzie at the bottom of the stack (4 down is first return addr)
+    mov     rsi, rsp
+    add     rsi, 200 ; 50 possible addresses down the stack
+
 .test_ptr:
-    cmp     ecx, esi 
+    cmp     rcx, rsi 
     je      .finish ; it reached the bottom without changing the value
 
-    add     ecx, 4 ; move down the stack to the next ptr
-    mov     edx, [ecx]
-    cmp     ebx, edx ; expected_return_addr == esp[i]
+    add     rcx, 8 ; move down the stack to the next ptr
+    mov     rdx, [rcx]
+    cmp     rbx, rdx ; expected_return_addr == esp[i]
     jne     .test_ptr  ; try with the next value
 .success:
     ; replace return address with the address of return_1_to_expected_return 
-    mov     edx, eax
-    add     edx, return_1_to_expected_return - runtime_offset
-    mov     [ecx], edx  
+    mov     rdx, rax
+    add     rdx, return_1_to_expected_return - runtime_offset
+    mov     [rcx], rdx  
     
-    ; change back the addr of original fn pointer so it is not hooked anymore
-    ; it does not need to be hooked assuming our swapped return address is in place
-    ; also this is good measure to fight against recursion 
-    ; (as the fn ptr might call itself, and then checked with if statement)
-    ; mov     ebx, [eax - runtime_offset + fn_ptr_addr]
-    ; mov     ecx, [eax - runtime_offset + original_jump_addr]
-    ; mov     [ebx], ecx
 .finish:
-    pop     esi
-    pop     edx
-    pop     ecx
-    pop     ebx
+    mov     rsi, [rax - runtime_offset + scratch3]
+    mov     rdx, [rax - runtime_offset + scratch2]
+    mov     rcx, [rax - runtime_offset + scratch1]
+    mov     rbx, [rax - runtime_offset + scratch0]
 
     ; go back to where it was supposed to go in the first place
-    mov     eax, [eax - runtime_offset + var_original_jump_addr]
-    jmp     eax 
+    mov     rax, [rax - runtime_offset + var_original_jump_addr]
+    jmp     rax 
 
 ; this function will be returned to instead of the caller
 ; so it can go in and hot patch the value
@@ -178,27 +186,22 @@ return_1_to_expected_return:
     ; eax contains the actual address of runtime_offset
     call    get_runtime_offset
 
-    push    ebx
-    push    ecx
+    push    rbx
+    push    rcx
 
-    mov     ebx, [eax - runtime_offset + var_call_count] 
-    inc     ebx
-    mov     [eax - runtime_offset + var_call_count], ebx
+    mov     rbx, [rax - runtime_offset + var_call_count] 
+    inc     rbx
+    mov     [rax - runtime_offset + var_call_count], rbx
 
-    ; need to reinstall the hook as the next time the return value will not be stopped
-    ; mov     ebx, [eax - runtime_offset + fn_ptr_addr]
-    ; mov     ecx, [eax - runtime_offset + swap_return]
-    ; mov     [ebx], ecx
-
-    pop     ecx
-    pop     ebx
+    pop     rcx
+    pop     rbx
 
     ; push return addr so when ret instruction is hit, it jumps back to this addr
-    mov     eax, [eax - runtime_offset + var_expected_return_addr]
-    push    eax
+    mov     rax, [rax - runtime_offset + var_expected_return_addr]
+    push    rax
 
     ; set eax to 1 (true)
-    xor     eax, eax
-    inc     eax
+    xor     rax, rax
+    inc     rax
 
     ret
