@@ -4,6 +4,10 @@ use std::fs::{File, self};
 use std::path::{Path, PathBuf};
 use std::env;
 
+fn print_help() {
+    println!("usage: [root_dir] [optional: output_name]");
+}
+
 fn collapse(path: &Path, names: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(&path).unwrap() {
         let entry = entry.unwrap();
@@ -20,7 +24,8 @@ fn main() {
 
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        println!("Root directory is needed as first arguemnt");
+        print_help();
+        return;
     }
 
     let output_name = match args.get(2) {
