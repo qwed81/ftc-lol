@@ -1,4 +1,5 @@
 use winapi::um::handleapi;
+use winapi::um::libloaderapi;
 use winapi::um::memoryapi;
 use winapi::um::processthreadsapi;
 use winapi::um::errhandlingapi;
@@ -15,6 +16,7 @@ use winapi::um::winnt::{
 };
 
 use winapi::ctypes::c_void;
+use std::ffi::CString;
 use std::mem::MaybeUninit;
 use std::ptr;
 use std::mem;
@@ -44,10 +46,12 @@ const TIME_BEFORE_MOD_POLL_FAIL: Duration = Duration::from_secs(20);
 
 const REQUIRED_PROCESS_PERMS: u32 = PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION;
 
-const BASE_ADDR: ExPtr = 0x7ffd_0000_0000;
-const RESERVE_ADDR: ExPtr = BASE_ADDR + 0x2200_0000;
-const STACK_ADDR: ExPtr = BASE_ADDR + 0x2500_0000;
-const SEG_TABLE_ADDR: ExPtr = BASE_ADDR + 0x3700_0000;
+// randomly picked numbers, maybe need to be changed in the future?
+// will work as long as MODULE_OFFSET fits within i32
+const MODULE_OFFSET: ExPtr = 0;
+const STACK_OFFSET: ExPtr = 0x2500_0000;
+const SEG_TABLE_OFFSET: ExPtr = 0x3700_0000;
+const STACK_LEN: ExLen = 10 * 4096;
 
 #[derive(Debug, Clone, Copy)]
 struct ThreadContextArgs {
@@ -64,6 +68,7 @@ pub struct PatchLoader {
 }
 
 impl PatchLoader {
+
     pub async fn wait_can_patch(process_file_name: &[u8]) -> Result<PatchLoader, ()> {
         let proc = wait_process_created(process_file_name).await?;
         proc.wait_can_patch().await?;
@@ -91,7 +96,25 @@ impl PatchLoader {
         let LoadRange {elf_start, elf_end} = elf_util::get_load_range(&elf.program_headers);
 
         let total_needed = elf_end - elf_start;
-        self.proc.reserve_mem(total_needed as ExLen).unwrap();
+
+        // we need to load in the address of all of the __load_ function addresses,
+        // so it can call the functions that it needs
+        let kernel32_handle = unsafe {
+            let kernel32_text = "kernel32\0".as_ptr() as *const i8;
+            libloaderapi::GetModuleHandleA(kernel32_text)
+        };
+
+        if kernel32_handle == ptr::null_mut() {
+            panic!("Could not find kernel32");
+        }
+
+        // this is tricky because it has to be within a 32 bit pointer of kernel32, because
+        // it can then utilize 32bit relative jumps
+        let load_addr = kernel32_handle as ExPtr & 0xFFFFFFFF_F0000000;
+        let module_start = load_addr + MODULE_OFFSET;
+        println!("Loading at: {:x}", module_start);
+
+        self.proc.reserve_mem(module_start, total_needed as ExLen).unwrap();
 
         // load elf sections
         let mut zero_buffer = Vec::new();
@@ -103,11 +126,12 @@ impl PatchLoader {
             load_segment(elf_file, header, &mut self.proc, elf_start, &mut zero_buffer);
         }
 
-        const STACK_LEN: ExLen = 10 * 4096;
-        self.proc.allocate_mem(STACK_ADDR, STACK_LEN)?;
+        let stack_addr = load_addr + STACK_OFFSET;
+        self.proc.allocate_mem(stack_addr, STACK_LEN)?;
 
-        self.proc.allocate_mem(SEG_TABLE_ADDR, segment_table.len().try_into().unwrap())?;
-        self.proc.mem_write_direct(SEG_TABLE_ADDR, segment_table)?;
+        let seg_table_addr = load_addr + SEG_TABLE_OFFSET;
+        self.proc.allocate_mem(seg_table_addr, segment_table.len().try_into().unwrap())?;
+        self.proc.mem_write_direct(load_addr + SEG_TABLE_OFFSET, segment_table)?;
 
         let resolve = |name: &str| -> ExPtr {
             let offset = elf_util::get_sym_offset(&elf, name);
@@ -118,7 +142,7 @@ impl PatchLoader {
         };
 
         let seg_tab_addr_addr = resolve("arg_seg_table_addr");
-        self.proc.mem_write_direct(seg_tab_addr_addr, &SEG_TABLE_ADDR.to_le_bytes())?;
+        self.proc.mem_write_direct(seg_tab_addr_addr, &seg_table_addr.to_le_bytes())?;
 
         let path_root_buf_addr = resolve("path_root_buf");
         self.proc.mem_write_direct(path_root_buf_addr, cwd)?;
@@ -131,10 +155,27 @@ impl PatchLoader {
             start_addr: resolve("_start"),
             // the stack grows down, so we have to start at the end of the
             // memory segment
-            new_esp: STACK_ADDR + STACK_LEN,
+            new_esp: stack_addr + STACK_LEN,
         };
 
         self.proc.change_thread_context(thread_handle, &thread_args)?;
+
+     
+        for (func_name, elf_off) in elf_util::get_load_symbols(&elf) {
+            let c_func_name = CString::new(func_name).unwrap();
+            let addr = unsafe { 
+                libloaderapi::GetProcAddress(kernel32_handle, c_func_name.as_ptr())
+            };
+
+            if addr.is_null() {
+                println!("Could not get address for: {}", func_name);
+                return Err(());
+            }
+
+            // write the actual pointer into their memory
+            self.proc.mem_write(elf_off, &(addr as ExPtr).to_ne_bytes())?;
+            println!("Loaded function: {} at {:?}", func_name, addr);
+        }
         
         resume_thread(thread_handle)?;
         Ok(())
@@ -221,13 +262,13 @@ impl Process {
     }
     */
 
-    fn reserve_mem(&mut self, len: ExLen) -> Result<(), ()> {
+    fn reserve_mem(&mut self, start: ExPtr, len: ExLen) -> Result<(), ()> {
         assert!(self.reserved.is_none());
 
         // make sure that it is ok to allocate this memory, and it will not be taken up by anyone
         // else. If not all the segments map to an actual page, it is ok because it will not
         // take any physical memory
-        let reserve = RESERVE_ADDR as *mut c_void;
+        let reserve = start as *mut c_void;
         let alloc = unsafe {
             memoryapi::VirtualAllocEx(self.h_proc, reserve,
                 len as usize, MEM_RESERVE, PAGE_NOACCESS)
