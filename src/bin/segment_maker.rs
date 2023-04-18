@@ -20,7 +20,7 @@ fn collapse(path: &Path, names: &mut Vec<PathBuf>) {
 }
 
 fn main() {
-    let lol_prefix = PathBuf::from("C:/Riot Games/League of Legends/Game/DATA/FINAL/");
+    let lol_prefix = PathBuf::from("C:/Riot Games/League of Legends/Game/");
 
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
@@ -46,6 +46,7 @@ fn main() {
         let mut game_path = lol_prefix.clone();
         game_path.push(rel_path);
 
+        println!("calculating: {:?} {:?}", &game_path, &file_paths[i]);
         let game_wad = File::open(&game_path).unwrap();
         let mod_wad = File::open(&file_paths[i]).unwrap();
         game_wads.push(unsafe { MmapOptions::new().map(&game_wad) }.unwrap());
@@ -55,8 +56,21 @@ fn main() {
     }
 
     for i in 0..file_paths.len() {
-        let game_path = game_paths[i].as_os_str().to_str().unwrap().as_bytes();
-        table.add_wad(game_path, &game_wads[i], &mod_wads[i]).unwrap();
+        let without_prefix = game_paths[i].strip_prefix(&lol_prefix).unwrap();
+        let game_path = without_prefix.as_os_str().to_str().unwrap().as_bytes();
+        
+        // replace all \ with / (because it needs to match the game's file requests exactly)
+        let replaced: Vec<_> = game_path.iter().map(|&b| match b {
+            b'\\' => b'/',
+            _ => b
+        }).collect();
+
+        // the program is going to exit after making the segment table anyways and this 
+        // is a lot easier way to get around the lifetimes
+        let replaced: &'static [u8] = Box::leak(Box::new(replaced));
+
+        println!("adding: {}", std::str::from_utf8(game_path).unwrap());
+        table.add_wad(&replaced, &game_wads[i], &mod_wads[i]).unwrap();
     }
 
     fs::write(output_name, &table.flatten()).unwrap();
