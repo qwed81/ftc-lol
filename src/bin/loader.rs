@@ -1,5 +1,5 @@
 use skins::repository::client::{self, UpdateReceiver};
-use skins::repository::mod_fs::{self, ModDir, EntryCache};
+use skins::repository::mod_fs::{ModDir, EntryCache};
 use skins::repository::{ModEntry, ExtendedModEntry, ModEntryState};
 use skins::patch_loader::PatchLoader;
 use std::sync::{Arc, Mutex};
@@ -85,7 +85,6 @@ async fn main() {
 
     let patch = File::open(patch_path).unwrap();
     let patch = unsafe { MmapOptions::new().map(&patch) }.unwrap();
-
 
     let cwd_bytes = cwd.as_os_str().to_str().unwrap().as_bytes();
     loader.load_and_resume(&patch, &cwd_bytes, &seg_table).unwrap();
