@@ -1,6 +1,6 @@
 use super::{PkgCache, PkgDir, ActivePkg};
 use axum::body::StreamBody;
-use axum::extract::{Multipart, Path, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Json};
 use axum::routing::{get, post};
@@ -11,7 +11,6 @@ use std::sync::{Arc, RwLock};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
-use serde_json::json;
 
 struct PkgState {
     dir: PkgDir,
@@ -20,7 +19,7 @@ struct PkgState {
 }
 
 async fn upload(State(state): State<Arc<PkgState>>, mut file: Multipart) -> impl IntoResponse {
-    let file = match file.next_field().await {
+    let mut file = match file.next_field().await {
         Ok(field) => match field {
             Some(field) => field,
             None => return Err((StatusCode::BAD_REQUEST, String::from("No file provided"))),
@@ -28,13 +27,29 @@ async fn upload(State(state): State<Arc<PkgState>>, mut file: Multipart) -> impl
         Err(e) => return Err((e.status(), e.body_text())),
     };
 
-    let bytes = match file.bytes().await {
-        Ok(bytes) => bytes,
-        Err(e) => return Err((e.status(), e.body_text())),
+    let mut hasher = Sha256::new();
+    
+    // should probably write directly to file, but this is easier and
+    // works for now
+    let mut buffer = Vec::new();
+    let mut d = 0;
+    loop {
+        match file.chunk().await {
+            Ok(Some(bytes)) => {
+                println!("{}", d);
+                hasher.update(&bytes);
+                buffer.extend(bytes);
+                d += 1;
+            },
+            Ok(None) => break,
+            Err(e) => {
+                let text = e.body_text();
+                println!("{}", &text);
+                return Err((e.status(), text));
+            }
+        }
     };
 
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
     let hash_string = format!("{:x}", hasher.finalize());
 
     // if we already have the file, no need to add it
@@ -57,7 +72,7 @@ async fn upload(State(state): State<Arc<PkgState>>, mut file: Multipart) -> impl
         }
     };
 
-    if let Err(_) = file.write_all(&bytes).await {
+    if let Err(_) = file.write_all(&buffer).await {
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             String::from("Could not create file"),
@@ -154,7 +169,7 @@ async fn deactivate(
     Ok(())
 }
 
-pub async fn listen(dir: PkgDir, cache: PkgCache) {
+pub async fn listen(dir: PkgDir, cache: PkgCache, port: u16) {
     let router = Router::new()
         .route("/get-active", get(get_active))
         .route("/upload", post(upload))
@@ -166,9 +181,10 @@ pub async fn listen(dir: PkgDir, cache: PkgCache) {
             dir,
             cache: RwLock::new(cache),
             active_pkg_hash: RwLock::new(None),
-        }));
+        }))
+        .layer(DefaultBodyLimit::max(1024 * 1024 * 10)); // 10mb max file size
 
-    let addr: SocketAddrV4 = "127.0.0.1:8000".parse().unwrap();
+    let addr: SocketAddrV4 = format!("127.0.0.1:{}", port).parse().unwrap();
     Server::bind(&SocketAddr::V4(addr))
         .serve(router.into_make_service())
         .await

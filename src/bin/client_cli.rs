@@ -2,9 +2,10 @@ use memmap2::MmapOptions;
 use sha2::{Digest, Sha256};
 use skins::pkg::client::PkgClient;
 use skins::pkg::{PkgCache, PkgDir};
-use std::fs::File;
+use std::fs::{File, self};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::env;
 
 fn import(dir: &PkgDir, cache: &mut PkgCache, path: &Path) -> Result<String, ()> {
     let mut file = File::open(path).unwrap();
@@ -25,6 +26,7 @@ fn print_help() {
     println!("import [path]");
     println!("upload [hash]");
     println!("download [hash]");
+    println!("rm [hash]");
     println!("set [hash] [active | inactive]");
     println!("local");
     println!("remote");
@@ -96,6 +98,27 @@ async fn download(client: &PkgClient, cache: &mut PkgCache, hash: &str) -> Resul
     client.download(cache, String::from(hash)).await
 }
 
+fn remove(dir: &PkgDir, cache: &mut PkgCache, hash: &str) -> Result<(), ()> {
+    let hash = match get_prefixed_hash(&hash, cache.hashes()) {
+        PrefixedHash::Valid(hash) => hash,
+        PrefixedHash::TooMany => {
+            println!("More than one hash matches the prefix");
+            return Err(());
+        }
+        PrefixedHash::NotAny => {
+            println!("No hashes match the prefix");
+            return Err(());
+        }
+    };
+    
+    cache.remove(&hash);
+    let path = dir.get_pkg_path(&hash).unwrap();
+    match fs::remove_file(&path) {
+        Ok(_) => Ok(()),
+        Err(_) => Err(())
+    }
+}
+
 async fn set(client: &PkgClient, hash: &str, active_text: &str) -> Result<(), ()> {
     let hashes = match client.list().await {
         Ok(hashes) => hashes,
@@ -137,9 +160,18 @@ where
 
 #[tokio::main]
 async fn main() {
-    let dir = PkgDir::new(PathBuf::from("./_test/client1"));
+    let args: Vec<_> = env::args().collect();
+    if args.len() < 2 {
+        println!("The ip must be supplied as the first argument, and port as the second");
+        return;
+    }
+
+    let ip = args[1].clone();
+    let port = args[2].parse().unwrap();
+
+    let dir = PkgDir::new(PathBuf::from("client_packages"));
     let mut cache = PkgCache::from_dir(&dir).await.unwrap();
-    let client = PkgClient::new(dir.clone(), String::from("127.0.0.1"), 8000);
+    let client = PkgClient::new(dir.clone(), ip, port);
 
     let stdin = io::stdin();
     let mut buffer = String::new();
@@ -218,6 +250,16 @@ async fn main() {
 
                 match active { Some(active) => println!("{}", active),
                     None => println!("There is no package active")
+                }
+            },
+            "rm" => {
+                if cmd.len() < 2 {
+                    println!("Removing a file requires the package hash");
+                    continue;
+                }
+
+                if let Err(_) = remove(&dir, &mut cache, &cmd[1]) {
+                    println!("There was an error removing the package");
                 }
             }
             _ => println!("Invalid command"),

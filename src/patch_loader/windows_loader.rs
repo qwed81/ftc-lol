@@ -48,10 +48,9 @@ const REQUIRED_PROCESS_PERMS: u32 = PROCESS_VM_OPERATION | PROCESS_VM_READ | PRO
 
 // randomly picked numbers, maybe need to be changed in the future?
 // will work as long as MODULE_OFFSET fits within i32
-const MODULE_OFFSET: ExPtr = 0;
-const STACK_OFFSET: ExPtr = 0x2500_0000;
-const SEG_TABLE_OFFSET: ExPtr = 0x3700_0000;
+const STACK_OFFSET: i64 = 0x0030_0000;
 const STACK_LEN: ExLen = 10 * 4096;
+const SEG_TABLE_OFFSET: i64 = 0x0050_0000;
 
 #[derive(Debug, Clone, Copy)]
 struct ThreadContextArgs {
@@ -61,6 +60,8 @@ struct ThreadContextArgs {
     start_addr: ExPtr,
     new_esp: ExPtr,
 }
+
+
 
 pub struct PatchLoader {
     proc: Process,
@@ -78,6 +79,10 @@ impl PatchLoader {
         })
     }
 
+    pub async fn wait_process_closed(&self) -> Result<(), ()> {
+        wait_closed(self.proc.pid).await
+    }
+
     pub fn freeze_process(&mut self) -> Result<(), ()> {
         let thread_handle = self.proc.open_victim_thread()?;
         suspend_thread(thread_handle)?;
@@ -86,10 +91,9 @@ impl PatchLoader {
         Ok(())
     }
 
-    pub fn resume_without_load(&mut self) {
-        resume_thread(thread_handle.unwrap())?;
+    pub fn resume_without_load(&mut self) -> Result<(), ()> {
+        resume_thread(self.thread_handle.unwrap())
     }
-
     pub fn load_and_resume(&mut self, elf_file: &[u8], cwd: &[u8], segment_table: &[u8]) -> Result<(), ()> {
         assert!(self.thread_handle.is_some());
         assert!(cwd.len() < 1024);
@@ -99,7 +103,7 @@ impl PatchLoader {
         let elf = Elf::parse(&elf_file).unwrap();
         let LoadRange {elf_start, elf_end} = elf_util::get_load_range(&elf.program_headers);
 
-        let total_needed = elf_end - elf_start;
+        let elf_len = elf_end - elf_start;
 
         // we need to load in the address of all of the __load_ function addresses,
         // so it can call the functions that it needs
@@ -112,14 +116,18 @@ impl PatchLoader {
             panic!("Could not find kernel32");
         }
 
+        fn offset(p: ExPtr, o: i64) -> ExPtr {
+            (p as i128 + o as i128) as ExPtr
+        }
+
         // this is tricky because it has to be within a 32 bit pointer of kernel32, because
         // it can then utilize 32bit relative jumps
-        let load_addr = kernel32_handle as ExPtr & 0xFFFFFFFF_F0000000;
-        let module_start = load_addr + MODULE_OFFSET;
-        println!("Loading at: {:x}", module_start);
+        let mut load_addr = kernel32_handle as ExPtr & 0xFFFFFFFF_80000000;
+        while let Err(_) = self.proc.reserve_mem(load_addr, elf_len as ExLen) {
+            load_addr += 0x1000000;
+        }
 
-        self.proc.reserve_mem(module_start, total_needed as ExLen).unwrap();
-
+        println!("Loading at: {:x}", load_addr);
         // load elf sections
         let mut zero_buffer = Vec::new();
         for header in &elf.program_headers {
@@ -130,12 +138,12 @@ impl PatchLoader {
             load_segment(elf_file, header, &mut self.proc, elf_start, &mut zero_buffer);
         }
 
-        let stack_addr = load_addr + STACK_OFFSET;
+        let stack_addr = offset(load_addr, STACK_OFFSET);
         self.proc.allocate_mem(stack_addr, STACK_LEN)?;
 
-        let seg_table_addr = load_addr + SEG_TABLE_OFFSET;
+        let seg_table_addr = offset(load_addr, SEG_TABLE_OFFSET);
         self.proc.allocate_mem(seg_table_addr, segment_table.len().try_into().unwrap())?;
-        self.proc.mem_write_direct(load_addr + SEG_TABLE_OFFSET, segment_table)?;
+        self.proc.mem_write_direct(seg_table_addr, segment_table)?;
 
         let resolve = |name: &str| -> ExPtr {
             let offset = elf_util::get_sym_offset(&elf, name);
@@ -524,6 +532,43 @@ fn resume_thread(thread_handle: *mut c_void) -> Result<(), ()> {
         println!("thread could not resume, error is: {}", err);
         return Err(());
     }  
+
+    Ok(())
+}
+
+async fn wait_closed(pid: u32) -> Result<(), ()> {
+    let mut buf = Vec::with_capacity(MAX_PROCESS_ITER);
+    for _ in 0..MAX_PROCESS_ITER {
+        buf.push(0);
+    }
+
+    loop {
+        let mut size_needed = 0;
+        let result = unsafe {
+            psapi::EnumProcesses(buf.as_mut_ptr(), buf.len() as u32, &mut size_needed)
+        };
+        
+        if result == 0 {
+            let err = unsafe { errhandlingapi::GetLastError() };
+            println!("could not enumerate processes, error: {}", err);
+            return Err(());
+        }
+
+        let amt_returned = size_needed as usize / mem::size_of::<u32>();
+        let mut should_break = true;
+        for &x in &buf[0..amt_returned] {
+            if x == pid {
+                should_break = false;
+                break;
+            }
+        }
+
+        if should_break {
+            break;
+        }
+
+        time::sleep(PROCESS_POLL_DURATION).await;
+    }
 
     Ok(())
 }

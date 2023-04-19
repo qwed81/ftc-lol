@@ -53,6 +53,10 @@ impl PkgCache {
         Ok(PkgCache { hashes })
     }
 
+    pub fn remove(&mut self, hash: &str) {
+        self.hashes.remove(hash);
+    }
+
     pub fn contains(&self, hash: &str) -> bool {
         self.hashes.contains(hash)
     }
