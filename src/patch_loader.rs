@@ -13,12 +13,21 @@ mod linux_loader;
 #[cfg(target_os="linux")]
 pub use linux_loader::PatchLoader as PatchLoader;
 
+
+#[allow(unused)]
 type ExPtr = u64;
+
+#[allow(unused)]
 type ExLen = u64;
+
+#[allow(unused)]
 type ElfOff = u32;
+
+#[allow(unused)]
 type ElfLen = u32;
 
 #[derive(Debug, Clone, Copy)]
+#[allow(unused)]
 enum MemProt {
     R,
     RW,
