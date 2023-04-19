@@ -95,19 +95,19 @@ void init(BootstrapData* data) {
 		return;
 	}
 
-    post_hook_ReadFile = (ReadFileType) apply_jump_fn_hook(my_ReadFile, ReadFileAddr);
+    post_hook_ReadFile = (ReadFileType) apply_jump_fn_hook(my_ReadFile, __load_ReadFile);
     if (post_hook_ReadFile == NULL) {
         log_str(log_handle, "\nCould not hook ReadFile");
         return;
     }
 
-    post_hook_CreateFileA = (CreateFileAType) apply_jump_fn_hook(my_CreateFileA, CreateFileAAddr); 
+    post_hook_CreateFileA = (CreateFileAType) apply_jump_fn_hook(my_CreateFileA, __load_CreateFileA); 
     if (post_hook_CreateFileA == NULL) {
         log_str(log_handle, "\nCould not hook CreateFileA");
         return;
     }
 
-    post_hook_CreateFileW = (CreateFileWType) apply_jump_fn_hook(my_CreateFileW, CreateFileWAddr); 
+    post_hook_CreateFileW = (CreateFileWType) apply_jump_fn_hook(my_CreateFileW, __load_CreateFileW); 
     if (post_hook_CreateFileW == NULL) {
         log_str(log_handle, "\nCould not hook CreateFileW");
         return;

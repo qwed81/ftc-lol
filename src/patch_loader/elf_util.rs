@@ -10,16 +10,25 @@ pub struct LoadRange {
 
 pub fn get_sym_offset(elf: &Elf, sym_name: &str) -> Option<ElfOff> {
     for sym in &elf.syms {
-        let name = elf.strtab.get_at(sym.st_name);
-        match name {
-            Some(name) if name == sym_name => {
-                return Some(sym.st_value as ElfOff);
-            }
-            _ => (),
-        };
+        let name = elf.strtab.get_at(sym.st_name).unwrap();
+        if name == sym_name {
+            return Some(sym.st_value as ElfOff);
+        }
     }
 
     None
+}
+
+pub fn get_load_symbols<'a>(elf: &'a Elf) -> Vec<(&'a str, ElfOff)> {
+    let mut vals = Vec::new();
+    for sym in &elf.syms {
+        let name = elf.strtab.get_at(sym.st_name).unwrap();
+        if name.starts_with("__load_") {
+            vals.push((name.strip_prefix("__load_").unwrap(), sym.st_value as ElfOff));
+        }
+    }
+
+    vals
 }
 
 pub(super) fn get_protection(header: &ProgramHeader) -> MemProt {
