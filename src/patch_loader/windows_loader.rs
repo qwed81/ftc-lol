@@ -86,7 +86,11 @@ impl PatchLoader {
         Ok(())
     }
 
-    pub fn load_and_resume(mut self, elf_file: &[u8], cwd: &[u8], segment_table: &[u8]) -> Result<(), ()> {
+    pub fn resume_without_load(&mut self) {
+        resume_thread(thread_handle.unwrap())?;
+    }
+
+    pub fn load_and_resume(&mut self, elf_file: &[u8], cwd: &[u8], segment_table: &[u8]) -> Result<(), ()> {
         assert!(self.thread_handle.is_some());
         assert!(cwd.len() < 1024);
 
