@@ -20,7 +20,7 @@ fn get_root_path() -> PathBuf {
 async fn main() {
     let args: Vec<_> = env::args().collect();
     if args.len() < 2 {
-        println!("The ip must be supplied as the first argument, and port as the second");
+        println!("the ip must be supplied as the first argument, and port as the second");
         return;
     }
 
@@ -44,36 +44,54 @@ async fn main() {
     } 
 
     loop {
-        let mut loader = PatchLoader::wait_can_patch(LOL_PATH)
-            .await
-            .expect("Loader can not wait for process");
+        println!("waiting for process: {}", std::str::from_utf8(LOL_PATH).unwrap());
+        let mut loader = match PatchLoader::wait_can_patch(LOL_PATH).await {
+            Ok(loader) => loader,
+            Err(e) => {
+                println!("loader could not wait for process");
+                println!("{}\nerror: {:?}", e.message, e.code);
+                break;
+            }
+        };
+
         // once the process loads, then freeze it before doing
         // any work to prevent race condition
-        loader
-            .freeze_process()
-            .expect("Loader could not freeze process");
+        if let Err(e) = loader.freeze_process() {
+            println!("loader could not freeze process");
+            println!("{}\nerror: {:?}", e.message, e.code);
+            break;
+        }
 
         let active: Option<String> = match client.get_active().await {
             Ok(active) => active,
             Err(_) => {
-                println!("Could not get active package, loading game without patch");
-                loader.resume_without_load().expect("Could not resume, manually close LOL");
+                println!("could not get active package, loading game without patch");
+                loader.resume_without_load().expect("could not resume, manually close LOL");
                 loader.wait_process_closed().await.unwrap();
+                println!("waiting for exit");
                 continue;
             }
         };
 
         let active = match active {
             Some(active) => active,
-            None => continue
+            None => {
+                loader.resume_without_load().expect("could not resume, manually close LOL");
+                loader.wait_process_closed().await.unwrap();
+                println!("waiting for exit");
+                continue
+            }
         };
 
         if cache.contains(&active) == false {
-            println!("Do not have {} downloaded. Downloading now", &active);
+            println!("do not have {}", &active);
+            println!("downloading {}", &active);
+
             if let Err(_) = client.download(&mut cache, active.clone()).await {
-                println!("Package download failed, loading game without patch");
-                loader.resume_without_load().expect("Could not resume, manually close LOL");
+                println!("package download failed, loading game without patch");
+                loader.resume_without_load().expect("could not resume, manually close LOL");
                 loader.wait_process_closed().await.unwrap();
+                println!("waiting for exit");
                 continue;
             }
         }
@@ -88,15 +106,15 @@ async fn main() {
                     // the downloader will still have the lock on it. Keep trying to
                     // get the lock
                     if retry_count < 5 {
-                        println!("Could not open package file (attempt {}), retrying in 1 second", retry_count);
+                        println!("could not open package file (attempt {}), retrying in 1 second", retry_count);
                         retry_count += 1;
 
                         time::sleep(Duration::from_secs(1)).await;
                         continue;
                     }
 
-                    println!("Could not open package file, loading game without patch");
-                    loader.resume_without_load().expect("Could not resume, manually close LOL");
+                    println!("could not open package file, loading game without patch");
+                    loader.resume_without_load().expect("could not resume, manually close LOL");
                     loader.wait_process_closed().await.unwrap();
                 }
             };
@@ -104,11 +122,12 @@ async fn main() {
 
         let seg_table = unsafe { MmapOptions::new().map(&seg_table_file) }.unwrap();
         if let Err(_) = loader.load_and_resume(&elf_file, root_u8_ref, &seg_table) {
-            println!("Loader could not load properly, starting game anyways");
-            loader.resume_without_load().expect("Could not resume, manually close LOL");
+            println!("loader could not load properly, starting game anyways");
+            loader.resume_without_load().expect("could not resume, manually close LOL");
         }
 
-        println!("Waiting for exit");
+        println!("loaded sucessfully");
+        println!("waiting for exit");
         loader.wait_process_closed().await.unwrap();
     }
 }

@@ -13,6 +13,11 @@ mod linux_loader;
 #[cfg(target_os="linux")]
 pub use linux_loader::PatchLoader as PatchLoader;
 
+#[derive(Debug)]
+pub struct LoadError {
+    pub message: String,
+    pub code: Option<u32>
+}
 
 #[allow(unused)]
 type ExPtr = u64;

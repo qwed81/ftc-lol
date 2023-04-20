@@ -1,50 +1,53 @@
+use winapi::um::errhandlingapi;
 use winapi::um::handleapi;
 use winapi::um::libloaderapi;
 use winapi::um::memoryapi;
 use winapi::um::processthreadsapi;
-use winapi::um::errhandlingapi;
-use winapi::um::tlhelp32::TH32CS_SNAPTHREAD;
-use winapi::um::tlhelp32::THREADENTRY32;
 use winapi::um::psapi;
 use winapi::um::tlhelp32;
-use winapi::um::winnt::THREAD_ALL_ACCESS;
+use winapi::um::tlhelp32::TH32CS_SNAPTHREAD;
+use winapi::um::tlhelp32::THREADENTRY32;
 use winapi::um::winnt::CONTEXT;
 use winapi::um::winnt::CONTEXT_FULL;
+use winapi::um::winnt::THREAD_ALL_ACCESS;
 use winapi::um::winnt::{
-    PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE, PROCESS_QUERY_INFORMATION, MEM_RESERVE,
-    MEM_COMMIT, PAGE_NOACCESS, PAGE_EXECUTE_READWRITE, PAGE_READONLY, PAGE_READWRITE, PAGE_EXECUTE_READ
+    MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_NOACCESS,
+    PAGE_READONLY, PAGE_READWRITE, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION,
+    PROCESS_VM_READ, PROCESS_VM_WRITE,
 };
 
-use winapi::ctypes::c_void;
+use super::LoadError;
+use std::collections::HashSet;
 use std::ffi::CString;
+use std::mem;
 use std::mem::MaybeUninit;
 use std::ptr;
-use std::mem;
-use std::time::{Duration, Instant};
-use std::collections::HashSet;
 use std::slice;
+use std::time::{Duration, Instant};
+use winapi::ctypes::c_void;
 
 use goblin::elf::{Elf, ProgramHeader};
 use goblin::elf64::program_header::PT_LOAD;
 
 use tokio::time;
 
-use super::ElfLen;
-use super::{ExPtr, ExLen, MemProt, ElfOff};
 use super::elf_util::{self, LoadRange};
+use super::ElfLen;
+use super::{ElfOff, ExLen, ExPtr, MemProt};
 
 const MAX_PROCESS_FILE_NAME_LEN: usize = 1_000;
 const MAX_PROCESS_ITER: usize = 10_000;
 const MAX_MODULES: usize = 1000;
 
 // the amount of modules that need to be loaded before the thread is suspended and we apply hooks
-const PATCH_LOAD_MOD_AMT_THRESHOLD: usize = 5; 
+const PATCH_LOAD_MOD_AMT_THRESHOLD: usize = 5;
 
 const PROCESS_POLL_DURATION: Duration = Duration::from_millis(10);
 const MOD_POLL_DURATION: Duration = Duration::from_millis(1);
 const TIME_BEFORE_MOD_POLL_FAIL: Duration = Duration::from_secs(20);
 
-const REQUIRED_PROCESS_PERMS: u32 = PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION;
+const REQUIRED_PROCESS_PERMS: u32 =
+    PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION;
 
 // randomly picked numbers, maybe need to be changed in the future?
 // will work as long as MODULE_OFFSET fits within i32
@@ -61,29 +64,27 @@ struct ThreadContextArgs {
     new_esp: ExPtr,
 }
 
-
-
 pub struct PatchLoader {
     proc: Process,
-    thread_handle: Option<*mut c_void>
+    thread_handle: Option<*mut c_void>,
 }
 
 impl PatchLoader {
-
-    pub async fn wait_can_patch(process_file_name: &[u8]) -> Result<PatchLoader, ()> {
+    pub async fn wait_can_patch(process_file_name: &[u8]) -> Result<PatchLoader, LoadError> {
         let proc = wait_process_created(process_file_name).await?;
         proc.wait_can_patch().await?;
 
         Ok(PatchLoader {
-            proc, thread_handle: None
+            proc,
+            thread_handle: None,
         })
     }
 
-    pub async fn wait_process_closed(&self) -> Result<(), ()> {
+    pub async fn wait_process_closed(&self) -> Result<(), LoadError> {
         wait_closed(self.proc.pid).await
     }
 
-    pub fn freeze_process(&mut self) -> Result<(), ()> {
+    pub fn freeze_process(&mut self) -> Result<(), LoadError> {
         let thread_handle = self.proc.open_victim_thread()?;
         suspend_thread(thread_handle)?;
 
@@ -91,17 +92,23 @@ impl PatchLoader {
         Ok(())
     }
 
-    pub fn resume_without_load(&mut self) -> Result<(), ()> {
+    pub fn resume_without_load(&mut self) -> Result<(), LoadError> {
         resume_thread(self.thread_handle.unwrap())
     }
-    pub fn load_and_resume(&mut self, elf_file: &[u8], cwd: &[u8], segment_table: &[u8]) -> Result<(), ()> {
+
+    pub fn load_and_resume(
+        &mut self,
+        elf_file: &[u8],
+        cwd: &[u8],
+        segment_table: &[u8],
+    ) -> Result<(), LoadError> {
         assert!(self.thread_handle.is_some());
         assert!(cwd.len() < 1024);
 
         let thread_handle = self.thread_handle.unwrap();
 
         let elf = Elf::parse(&elf_file).unwrap();
-        let LoadRange {elf_start, elf_end} = elf_util::get_load_range(&elf.program_headers);
+        let LoadRange { elf_start, elf_end } = elf_util::get_load_range(&elf.program_headers);
 
         let elf_len = elf_end - elf_start;
 
@@ -127,34 +134,41 @@ impl PatchLoader {
             load_addr += 0x1000000;
         }
 
-        println!("Loading at: {:x}", load_addr);
         // load elf sections
         let mut zero_buffer = Vec::new();
         for header in &elf.program_headers {
             if header.p_type != PT_LOAD {
                 continue;
-            } 
+            }
 
-            load_segment(elf_file, header, &mut self.proc, elf_start, &mut zero_buffer);
+            load_segment(
+                elf_file,
+                header,
+                &mut self.proc,
+                elf_start,
+                &mut zero_buffer,
+            )?;
         }
 
         let stack_addr = offset(load_addr, STACK_OFFSET);
         self.proc.allocate_mem(stack_addr, STACK_LEN)?;
 
         let seg_table_addr = offset(load_addr, SEG_TABLE_OFFSET);
-        self.proc.allocate_mem(seg_table_addr, segment_table.len().try_into().unwrap())?;
+        self.proc
+            .allocate_mem(seg_table_addr, segment_table.len().try_into().unwrap())?;
         self.proc.mem_write_direct(seg_table_addr, segment_table)?;
 
         let resolve = |name: &str| -> ExPtr {
             let offset = elf_util::get_sym_offset(&elf, name);
             match offset {
                 Some(offset) => self.proc.get_offset_ptr(offset),
-                None => panic!("The symbol {} does not exist in the binary", name)
+                None => panic!("The symbol {} does not exist in the binary", name),
             }
         };
 
         let seg_tab_addr_addr = resolve("arg_seg_table_addr");
-        self.proc.mem_write_direct(seg_tab_addr_addr, &seg_table_addr.to_le_bytes())?;
+        self.proc
+            .mem_write_direct(seg_tab_addr_addr, &seg_table_addr.to_le_bytes())?;
 
         let path_root_buf_addr = resolve("path_root_buf");
         self.proc.mem_write_direct(path_root_buf_addr, cwd)?;
@@ -170,62 +184,67 @@ impl PatchLoader {
             new_esp: stack_addr + STACK_LEN,
         };
 
-        self.proc.change_thread_context(thread_handle, &thread_args)?;
+        self.proc
+            .change_thread_context(thread_handle, &thread_args)?;
 
-     
         for (func_name, elf_off) in elf_util::get_load_symbols(&elf) {
             let c_func_name = CString::new(func_name).unwrap();
-            let addr = unsafe { 
-                libloaderapi::GetProcAddress(kernel32_handle, c_func_name.as_ptr())
-            };
+            let addr =
+                unsafe { libloaderapi::GetProcAddress(kernel32_handle, c_func_name.as_ptr()) };
 
             if addr.is_null() {
-                println!("Could not get address for: {}", func_name);
-                return Err(());
+                return Err(LoadError {
+                    message: format!("could not get address for function: {}", func_name),
+                    code: None
+                });
             }
 
             // write the actual pointer into their memory
-            self.proc.mem_write(elf_off, &(addr as ExPtr).to_ne_bytes())?;
-            println!("Loaded function: {} at {:?}", func_name, addr);
+            self.proc
+                .mem_write(elf_off, &(addr as ExPtr).to_ne_bytes())?;
         }
-        
+
         resume_thread(thread_handle)?;
         Ok(())
     }
 }
 
-/* TODO
 impl Drop for PatchLoader {
     fn drop(&mut self) {
-        
+        if let Some(handle) = self.thread_handle {
+            unsafe { handleapi::CloseHandle(handle) };
+        }
     }
 }
-*/
 
 #[repr(align(16))]
 struct AlignedContext(CONTEXT);
 
 struct Process {
     pid: u32,
-    h_proc: *mut c_void,
+    process_handle: *mut c_void,
     reserved: Option<ExPtr>,
 }
 
 impl Process {
-
     fn get_offset_ptr(&self, offset: ElfOff) -> ExPtr {
         assert!(self.reserved.is_some());
         let base = self.reserved.unwrap();
         base + offset as ExPtr
     }
 
-    async fn wait_can_patch(&self) -> Result<(), ()> {
+    async fn wait_can_patch(&self) -> Result<(), LoadError> {
         let mut modules = [ptr::null_mut(); MAX_MODULES];
         let start = Instant::now();
         loop {
             let mut amt_needed = 0;
             let result = unsafe {
-                psapi::EnumProcessModules(self.h_proc, modules.as_mut_ptr(), modules.len() as u32, &mut amt_needed)
+                psapi::EnumProcessModules(
+                    self.process_handle,
+                    modules.as_mut_ptr(),
+                    modules.len() as u32,
+                    &mut amt_needed,
+                )
             };
 
             // when it is loading and there are no modules, it is expected that this
@@ -233,8 +252,10 @@ impl Process {
             if result == 0 {
                 let err = unsafe { errhandlingapi::GetLastError() };
                 if err != 299 {
-                    println!("error while enumerating modules, error: {}", err);
-                    return Err(());
+                    return Err(LoadError {
+                        message: format!("error while enumerating modules"),
+                        code: Some(err)
+                    });
                 }
 
                 time::sleep(MOD_POLL_DURATION).await;
@@ -245,36 +266,21 @@ impl Process {
 
             // it is done loading enough for us to suspend and patch it
             if mod_amt >= PATCH_LOAD_MOD_AMT_THRESHOLD {
-                return Ok(())
+                return Ok(());
             }
 
             if Instant::now() - start > TIME_BEFORE_MOD_POLL_FAIL {
-                return Err(())
-            } 
+                return Err(LoadError {
+                    message: format!("waiting for patchable timed out"),
+                    code: None
+                });
+            }
 
             time::sleep(MOD_POLL_DURATION).await;
         }
     }
 
-    /*
-    pub fn from_pid(pid: u32) -> Result<Loader, ()> {
-        let h_proc = unsafe {
-            processthreadsapi::OpenProcess(REQUIRED_PROCESS_PERMS, 0, pid)
-        };
-
-        if h_proc.is_null() {
-            return Err(());
-        }
-
-        Ok(Loader {
-            pid,
-            h_proc,
-            reserved: None 
-        })
-    }
-    */
-
-    fn reserve_mem(&mut self, start: ExPtr, len: ExLen) -> Result<(), ()> {
+    fn reserve_mem(&mut self, start: ExPtr, len: ExLen) -> Result<(), LoadError> {
         assert!(self.reserved.is_none());
 
         // make sure that it is ok to allocate this memory, and it will not be taken up by anyone
@@ -282,112 +288,127 @@ impl Process {
         // take any physical memory
         let reserve = start as *mut c_void;
         let alloc = unsafe {
-            memoryapi::VirtualAllocEx(self.h_proc, reserve,
-                len as usize, MEM_RESERVE, PAGE_NOACCESS)
+            memoryapi::VirtualAllocEx(
+                self.process_handle,
+                reserve,
+                len as usize,
+                MEM_RESERVE,
+                PAGE_NOACCESS,
+            )
         };
 
         if alloc.is_null() {
             let err = unsafe { errhandlingapi::GetLastError() };
-            println!("could not reserve memory, error: {}", err);
-            return Err(());
+            return Err(LoadError {
+                message: format!("could not reserve memory at: {:x}, len: {}", start, len),
+                code: Some(err)
+            });
         }
 
-        // make sure it can fit in the 32 bit pointer, if it can then that mem is
-        // successfully reserved
-        self.reserved = Some(match (alloc as u64).try_into() {
-            Ok(reserved) => reserved,
-            Err(_) => return Err(())
-        });
-        
+        self.reserved = Some(alloc as ExPtr);
         Ok(())
     }
 
-    fn map_segment(&self, offset: ElfOff, len: ElfLen) -> Result<(), ()> {
+    fn map_segment(&self, offset: ElfOff, len: ElfLen) -> Result<(), LoadError> {
         let actual_addr = self.get_offset_ptr(offset) as *mut c_void;
-        println!("map addr: {:x?} len: {}", actual_addr, len);
-
         let alloc = unsafe {
-            memoryapi::VirtualAllocEx(self.h_proc,actual_addr,
-                len as usize, MEM_COMMIT, PAGE_EXECUTE_READWRITE)
+            memoryapi::VirtualAllocEx(
+                self.process_handle,
+                actual_addr,
+                len as usize,
+                MEM_COMMIT,
+                PAGE_EXECUTE_READWRITE,
+            )
         };
 
         if alloc.is_null() {
-            let err = unsafe { errhandlingapi::GetLastError() }; 
-            println!("could not map segment, error: {}", err);
-            return Err(());
+            let err = unsafe { errhandlingapi::GetLastError() };
+            return Err(LoadError {
+                message: format!("could not map segment, addr: {:x}", actual_addr as ExPtr),
+                code: Some(err)
+            });
         }
 
         Ok(())
     }
 
-    fn mem_write(&self, offset: ElfOff, src: &[u8]) -> Result<(), ()> {
+    fn mem_write(&self, offset: ElfOff, src: &[u8]) -> Result<(), LoadError> {
         let actual_addr = self.get_offset_ptr(offset);
         self.mem_write_direct(actual_addr, src)
     }
 
-    fn mem_write_direct(&self, addr: ExPtr, src: &[u8]) -> Result<(), ()> {
-        println!("mem write to addr: {:x?} len: {}", addr, src.len());
-
+    fn mem_write_direct(&self, addr: ExPtr, src: &[u8]) -> Result<(), LoadError> {
         let result = unsafe {
-            memoryapi::WriteProcessMemory(self.h_proc, addr as *mut c_void,
-                src.as_ptr() as *const c_void, src.len(), ptr::null_mut())
+            memoryapi::WriteProcessMemory(
+                self.process_handle,
+                addr as *mut c_void,
+                src.as_ptr() as *const c_void,
+                src.len(),
+                ptr::null_mut(),
+            )
         };
-        
+
         if result == 0 {
             let err = unsafe { errhandlingapi::GetLastError() };
-            println!("could not write memory, error is: {}", err);
-            return Err(());
+            return Err(LoadError {
+                message: format!("could not write memory, addr: {:x}", addr),
+                code: Some(err)
+            });
         }
 
         Ok(())
     }
 
-    fn mem_protect(&self, offset: ElfOff, len: ElfLen, prot: MemProt) -> Result<(), ()> {
+    fn mem_protect(&self, offset: ElfOff, len: ElfLen, prot: MemProt) -> Result<(), LoadError> {
         let actual_addr = self.get_offset_ptr(offset);
         self.mem_protect_direct(actual_addr, len as ExLen, prot)
     }
 
-    fn mem_protect_direct(&self, addr: ExPtr, len: ExLen, prot: MemProt) -> Result<(), ()> {
-        println!("mem protect at addr: {:x?} len: {} prot: {:?}", addr, len, prot);
+    fn mem_protect_direct(&self, addr: ExPtr, len: ExLen, prot: MemProt) -> Result<(), LoadError> {
         let prot = match prot {
             MemProt::R => PAGE_READONLY,
             MemProt::RW => PAGE_READWRITE,
             MemProt::RX => PAGE_EXECUTE_READ,
-            MemProt::RWX => PAGE_EXECUTE_READWRITE
-        }; 
+            MemProt::RWX => PAGE_EXECUTE_READWRITE,
+        };
 
         let mut old_prot = 0;
         let result = unsafe {
-            memoryapi::VirtualProtectEx(self.h_proc, addr as *mut c_void,
-                len as usize, prot, &mut old_prot)
+            memoryapi::VirtualProtectEx(
+                self.process_handle,
+                addr as *mut c_void,
+                len as usize,
+                prot,
+                &mut old_prot,
+            )
         };
 
         if result == 0 {
             let err = unsafe { errhandlingapi::GetLastError() };
-            println!("could not protect memory, error is: {}", err);
-            return Err(());
+            return Err(LoadError {
+                message: format!("could not protect memory, addr: {:x}", addr),
+                code: Some(err)
+            });
         }
 
         Ok(())
     }
-    
-    fn open_victim_thread(&self) -> Result<*mut c_void, ()> {
-        let snapshot = unsafe {
-            tlhelp32::CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, self.pid)
-        };
+
+    fn open_victim_thread(&self) -> Result<*mut c_void, LoadError> {
+        let snapshot = unsafe { tlhelp32::CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, self.pid) };
 
         if snapshot as isize == -1 {
             let err = unsafe { errhandlingapi::GetLastError() };
-            println!("could not take thread snapshot, err: {}", err);
-            return Err(());
+            return Err(LoadError {
+                message: format!("could not take thread snapshot"),
+                code: Some(err)
+            });
         }
 
         let mut entry: THREADENTRY32 = unsafe { mem::zeroed() };
         entry.dwSize = mem::size_of::<THREADENTRY32>() as u32;
         let thread_id = loop {
-            let thread = unsafe {
-                tlhelp32::Thread32Next(snapshot, &mut entry)
-            };
+            let thread = unsafe { tlhelp32::Thread32Next(snapshot, &mut entry) };
 
             if entry.th32OwnerProcessID == self.pid {
                 break entry.th32ThreadID;
@@ -395,51 +416,65 @@ impl Process {
 
             if thread == 0 {
                 let err = unsafe { errhandlingapi::GetLastError() };
-                println!("could not get thread info, err: {}", err);
-                return Err(());
+                return Err(LoadError {
+                    message: format!("could not get thread info"),
+                    code: Some(err)
+                });
             }
         };
 
-        println!("opening victim thread: {:x}", thread_id);
-        let thread_handle = unsafe {
-            processthreadsapi::OpenThread(THREAD_ALL_ACCESS, 0, thread_id)
-        };
+        let thread_handle =
+            unsafe { processthreadsapi::OpenThread(THREAD_ALL_ACCESS, 0, thread_id) };
 
         if thread_handle.is_null() {
             let err = unsafe { errhandlingapi::GetLastError() };
-            println!("could not open thread, err: {}", err);
-            return Err(());
+            return Err(LoadError {
+                message: format!("could not open thread, id: {:x}", thread_id),
+                code: Some(err)
+            });
         }
 
         Ok(thread_handle)
     }
 
-    fn allocate_mem(&self, addr: ExPtr, len: ExLen) -> Result<(), ()> {
+    fn allocate_mem(&self, addr: ExPtr, len: ExLen) -> Result<(), LoadError> {
         let alloc = unsafe {
-            memoryapi::VirtualAllocEx(self.h_proc, addr as *mut c_void,
-                len as usize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE)
+            memoryapi::VirtualAllocEx(
+                self.process_handle,
+                addr as *mut c_void,
+                len as usize,
+                MEM_RESERVE | MEM_COMMIT,
+                PAGE_READWRITE,
+            )
         };
 
         if alloc.is_null() {
-            let err = unsafe { errhandlingapi::GetLastError() }; 
-            println!("Could not allocate mem at: {:x}, error: {}", addr, err);
-            return Err(());
+            let err = unsafe { errhandlingapi::GetLastError() };
+            return Err(LoadError {
+                message: format!("could not allocate mem, addr: {:x}", addr),
+                code: Some(err)
+            });
         }
 
         Ok(())
     }
 
-    fn change_thread_context(&self, thread_handle: *mut c_void, args: &ThreadContextArgs) -> Result<(), ()> {
+    fn change_thread_context(
+        &self,
+        thread_handle: *mut c_void,
+        args: &ThreadContextArgs,
+    ) -> Result<(), LoadError> {
         let mut context: AlignedContext = unsafe { mem::zeroed() };
         context.0.ContextFlags = CONTEXT_FULL;
-        let context_result = unsafe {
-            processthreadsapi::GetThreadContext(thread_handle, &mut context.0)
-        };
-        
+        let context_result =
+            unsafe { processthreadsapi::GetThreadContext(thread_handle, &mut context.0) };
+
         if context_result == 0 {
             let err = unsafe { errhandlingapi::GetLastError() };
-            println!("Could not get thread context, error is: {}", err);
-            return Err(());
+            return Err(LoadError { 
+                message: format!("could not get thread context"),
+                code: Some(err) 
+            });
         }
 
         // load the old values into memory so they can be restored
@@ -452,30 +487,34 @@ impl Process {
         context.0.Rsp = args.new_esp;
         context.0.Rip = args.start_addr;
 
-        let context_result = unsafe {
-            processthreadsapi::SetThreadContext(thread_handle, &mut context.0)
-        };
+        let context_result =
+            unsafe { processthreadsapi::SetThreadContext(thread_handle, &mut context.0) };
 
         if context_result == 0 {
             let err = unsafe { errhandlingapi::GetLastError() };
-            println!("could not set thread context, error is: {}", err);
-            return Err(());
+            return Err(LoadError { 
+                message: format!("could not set thread context"),
+                code: Some(err) 
+            });
         }
 
         Ok(())
     }
-
 }
 
-/* TODO
 impl Drop for Process {
     fn drop(&mut self) {
-        
+        unsafe { handleapi::CloseHandle(self.process_handle) };
     }
 }
-*/
 
-fn load_segment(file: &[u8], header: &ProgramHeader, process: &mut Process, elf_start: ElfOff, zero_buffer: &mut Vec<u64>) {
+fn load_segment(
+    file: &[u8],
+    header: &ProgramHeader,
+    process: &mut Process,
+    elf_start: ElfOff,
+    zero_buffer: &mut Vec<u64>,
+) -> Result<(), LoadError> {
     // the file memory is always less than vm memory range. The
     // difference in the range needs to be zeroed out, as specified by ELF file
     let f_range = header.file_range();
@@ -484,10 +523,10 @@ fn load_segment(file: &[u8], header: &ProgramHeader, process: &mut Process, elf_
     let copy_len: ElfLen = f_range.len().try_into().unwrap();
     let total_len = m_range.len().try_into().unwrap();
     let vm_offset = (m_range.start - elf_start as usize).try_into().unwrap();
-    process.map_segment(vm_offset, total_len).unwrap();
+    process.map_segment(vm_offset, total_len)?;
 
     // write the actual data from the file into memory
-    process.mem_write(vm_offset, &file[f_range]).unwrap();
+    process.mem_write(vm_offset, &file[f_range])?;
 
     let left_over_len = (total_len - copy_len) as usize;
 
@@ -501,42 +540,42 @@ fn load_segment(file: &[u8], header: &ProgramHeader, process: &mut Process, elf_
         let u8_ptr = zero_buffer.as_ptr() as *const u8;
         let slice = unsafe { slice::from_raw_parts(u8_ptr, left_over_len) };
 
-        process.mem_write(vm_offset + copy_len, slice).unwrap();
+        process.mem_write(vm_offset + copy_len, slice)?;
     }
 
     // enable the protections requested
     let prot = elf_util::get_protection(header);
-    process.mem_protect(vm_offset, total_len, prot).unwrap();
+    process.mem_protect(vm_offset, total_len, prot)
 }
 
-fn suspend_thread(thread_handle: *mut c_void) -> Result<(), ()> {
-    let suspend_result = unsafe {
-        processthreadsapi::SuspendThread(thread_handle)
-    };
+fn suspend_thread(thread_handle: *mut c_void) -> Result<(), LoadError> {
+    let suspend_result = unsafe { processthreadsapi::SuspendThread(thread_handle) };
     if suspend_result == 0xFFFFFFFF {
         let err = unsafe { errhandlingapi::GetLastError() };
-        println!("thread could not suspend, error is: {}", err);
-        return Err(());
-    }  
+        return Err(LoadError {
+            message: format!("could not suspend thread"),
+            code: Some(err)
+        });
+    }
 
     Ok(())
 }
 
-fn resume_thread(thread_handle: *mut c_void) -> Result<(), ()> {
-    let resume_result = unsafe {
-        processthreadsapi::ResumeThread(thread_handle)
-    };
+fn resume_thread(thread_handle: *mut c_void) -> Result<(), LoadError> {
+    let resume_result = unsafe { processthreadsapi::ResumeThread(thread_handle) };
 
     if resume_result == 0xFFFFFFFF {
         let err = unsafe { errhandlingapi::GetLastError() };
-        println!("thread could not resume, error is: {}", err);
-        return Err(());
-    }  
+        return Err(LoadError {
+            message: format!("could not resume thread"),
+            code: Some(err)
+        });
+    }
 
     Ok(())
 }
 
-async fn wait_closed(pid: u32) -> Result<(), ()> {
+async fn wait_closed(pid: u32) -> Result<(), LoadError> {
     let mut buf = Vec::with_capacity(MAX_PROCESS_ITER);
     for _ in 0..MAX_PROCESS_ITER {
         buf.push(0);
@@ -544,14 +583,15 @@ async fn wait_closed(pid: u32) -> Result<(), ()> {
 
     loop {
         let mut size_needed = 0;
-        let result = unsafe {
-            psapi::EnumProcesses(buf.as_mut_ptr(), buf.len() as u32, &mut size_needed)
-        };
-        
+        let result =
+            unsafe { psapi::EnumProcesses(buf.as_mut_ptr(), buf.len() as u32, &mut size_needed) };
+
         if result == 0 {
             let err = unsafe { errhandlingapi::GetLastError() };
-            println!("could not enumerate processes, error: {}", err);
-            return Err(());
+            return Err(LoadError {
+                message: format!("could not enumerate processes"),
+                code: Some(err)
+            });
         }
 
         let amt_returned = size_needed as usize / mem::size_of::<u32>();
@@ -572,9 +612,8 @@ async fn wait_closed(pid: u32) -> Result<(), ()> {
 
     Ok(())
 }
-    
-async fn wait_process_created(process_file_name: &[u8]) -> Result<Process, ()> {
 
+async fn wait_process_created(process_file_name: &[u8]) -> Result<Process, LoadError> {
     // we can use the fact the EnumProcesses returns items in the same
     // order they were before if nothing changed to just to an arr comparison
     // which is super cheap compared to other methods
@@ -599,17 +638,17 @@ async fn wait_process_created(process_file_name: &[u8]) -> Result<Process, ()> {
     // in the case the arrays don't equal, this holds the previous values
     // so we can lookup items fast and determine which items need to be added
     let mut old_pids = HashSet::new();
-    println!("waiting for process: \"{}\"", String::from_utf8_lossy(process_file_name));
-
     let (pid, handle) = 'outer: loop {
         let result = unsafe {
             psapi::EnumProcesses(buf_ref.as_mut_ptr(), buf_ref.len() as u32, &mut size_needed)
         };
-        
+
         if result == 0 {
             let err = unsafe { errhandlingapi::GetLastError() };
-            println!("could not enumerate processes, error: {}", err);
-            return Err(());
+            return Err(LoadError {
+                message: format!("could not enumerate processes"),
+                code: Some(err)
+            });
         }
 
         amt_returned = size_needed as usize / mem::size_of::<u32>();
@@ -620,16 +659,16 @@ async fn wait_process_created(process_file_name: &[u8]) -> Result<Process, ()> {
         if amt_returned != old_returned || slice != old_slice {
             for &pid in slice {
                 // this pid is old, so we don't need to check it
-                if old_pids.contains(&pid) { 
+                if old_pids.contains(&pid) {
                     continue;
                 }
-                
+
                 // if we found the process, then break out of the loop
                 if let Some(handle) = process_is_named(pid, process_file_name) {
                     break 'outer (pid, handle);
                 }
             }
-            
+
             // set the old pids to the new pids
             old_pids.clear();
             for &pid in slice {
@@ -643,36 +682,41 @@ async fn wait_process_created(process_file_name: &[u8]) -> Result<Process, ()> {
         time::sleep(PROCESS_POLL_DURATION).await;
     };
 
-    Ok(Process { pid, h_proc: handle, reserved: None })
+    Ok(Process {
+        pid,
+        process_handle: handle,
+        reserved: None,
+    })
 }
 
 // returns the handle of the process if it has that name, otherwise it returns None
 fn process_is_named(pid: u32, expected_file_name: &[u8]) -> Option<*mut c_void> {
     assert!(expected_file_name.len() <= MAX_PROCESS_FILE_NAME_LEN);
     assert!(expected_file_name.len() > 0);
-    
-    let process_handle = unsafe {
-        processthreadsapi::OpenProcess(REQUIRED_PROCESS_PERMS, 0, pid)
-    };
+
+    let process_handle = unsafe { processthreadsapi::OpenProcess(REQUIRED_PROCESS_PERMS, 0, pid) };
 
     if process_handle.is_null() {
         return None;
     }
-    
+
     let file_name = unsafe {
         let mut name_buf: MaybeUninit<[u8; MAX_PROCESS_FILE_NAME_LEN]> = MaybeUninit::uninit();
         let name_buf_ptr = name_buf.assume_init_mut().as_mut_ptr() as *mut i8;
-        let amt_copied = psapi::GetModuleFileNameExA(process_handle, ptr::null_mut(), name_buf_ptr,
-            MAX_PROCESS_FILE_NAME_LEN as u32) as usize;
+        let amt_copied = psapi::GetModuleFileNameExA(
+            process_handle,
+            ptr::null_mut(),
+            name_buf_ptr,
+            MAX_PROCESS_FILE_NAME_LEN as u32,
+        ) as usize;
         &name_buf.assume_init()[0..amt_copied]
     };
 
-    // println!("new process path queried: {}", String::from_utf8_lossy(file_name));
-    if file_name == expected_file_name { 
-        Some(process_handle) 
+    if file_name == expected_file_name {
+        Some(process_handle)
     } else {
         // not much to do if this fails, just leak if its still open ig
         unsafe { handleapi::CloseHandle(process_handle) };
-        None 
+        None
     }
 }
