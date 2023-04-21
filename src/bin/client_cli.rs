@@ -55,15 +55,18 @@ fn import(dir: &PkgDir, cache: &mut PkgCache, path: &Path) -> Result<String, ()>
 }
 
 fn print_help() {
-    println!("import [path]");
-    println!("upload [hash]");
-    println!("download [hash]");
-    println!("set [hash] [active | inactive]");
-    println!("local");
-    println!("remote");
-    println!("active");
-    println!("vl");
-    println!("cl");
+    println!("import [path] - copies and hashes a seg file to local package list");
+    println!("upload [hash] - uploades a package to the remote package list");
+    println!("download [hash] - downloads a package from the server manually");
+    println!("set [hash] [active | inactive] - sets a package active/inactive");
+    println!("local - lists local packages");
+    println!("remote - lists remote packages");
+    println!("active - outputs hash of current active package");
+    println!("clear - clears the terminal");
+    println!("vl - views loader logs without consuming them");
+    println!("cl - views loader logs and removes them");
+    println!("exit - exists without risk of package corruption");
+    println!("\nnote: download of active package will occur automatically on game load");
 }
 
 enum PrefixedHash {
@@ -403,6 +406,8 @@ async fn load_patch_loop(
             }
         };
 
+        add_message(&buffer, String::from("process found")).await;
+
         // once the process loads, then freeze it before doing
         // any work to prevent race condition
         if let Err(e) = loader.freeze_process() {
@@ -412,6 +417,8 @@ async fn load_patch_loop(
             add_message(&buffer, m2).await;
             break;
         }
+
+        add_message(&buffer, String::from("started loading")).await;
 
         let active: Option<String> = match client.get_active().await {
             Ok(active) => active,
@@ -440,23 +447,24 @@ async fn load_patch_loop(
             }
         };
 
-        let has_hash = cache.read().await.contains(&active);
-        if has_hash == false {
-            let m1 = format!("do not have {}", &active);
-            let m2 = format!("downloading {}", &active);
-            add_message(&buffer, m1).await;
-            add_message(&buffer, m2).await;
-
+        {
             let mut cache = cache.write().await;
-            if let Err(_) = client.download(&mut cache, active.clone()).await {
-                add_message(&buffer, String::from("package download failed, loading game without patch")).await;
-                loader
-                    .resume_without_load()
-                    .expect("could not resume, manually close LOL");
+            if cache.contains(&active) == false {
+                let m1 = format!("do not have {}", &active);
+                let m2 = format!("downloading {}", &active);
+                add_message(&buffer, m1).await;
+                add_message(&buffer, m2).await;
 
-                loader.wait_process_closed().await.unwrap();
-                add_message(&buffer, String::from("waiting for exit")).await;
-                continue;
+                if let Err(_) = client.download(&mut cache, active.clone()).await {
+                    add_message(&buffer, String::from("package download failed, loading game without patch")).await;
+                    loader
+                        .resume_without_load()
+                        .expect("could not resume, manually close LOL");
+
+                    loader.wait_process_closed().await.unwrap();
+                    add_message(&buffer, String::from("waiting for exit")).await;
+                    continue;
+                }
             }
         }
 
