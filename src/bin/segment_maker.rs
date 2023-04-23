@@ -1,4 +1,4 @@
-use skins::segment_table::SegmentTableBuilder;
+use skins::segment_table::RawSegmentTableBuilder;
 use memmap2::MmapOptions;
 use std::fs::{File, self};
 use std::path::{Path, PathBuf};
@@ -20,7 +20,7 @@ fn collapse(path: &Path, names: &mut Vec<PathBuf>) {
 }
 
 fn main() {
-    let lol_prefix = PathBuf::from("C:/Riot Games/League of Legends/Game/");
+    let lol_prefix = PathBuf::from(skins::LOL_WAD_PREFIX);
 
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
@@ -37,7 +37,7 @@ fn main() {
     let prefix = &args[1];
     collapse(&PathBuf::from(prefix), &mut file_paths);
 
-    let mut table = SegmentTableBuilder::new();
+    let mut table = RawSegmentTableBuilder::new();
     let mut game_paths = Vec::new();
     let mut game_wads = Vec::new();
     let mut mod_wads = Vec::new();

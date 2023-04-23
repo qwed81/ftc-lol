@@ -53,6 +53,12 @@ pub fn print_entries(wad: &[u8]) {
     }
 }
 
+pub fn get_data_start(wad: &[u8]) -> Result<u32, ()> {
+    let header = read_header(wad)?;
+    let total_entry_size = header.entry_count * mem::size_of::<WadEntry>() as u32;
+    Ok(HEADER_LEN as u32 + total_entry_size)
+}
+
 // returns the bytes for just the header
 pub fn slice_header(wad: &[u8]) -> &[u8] {
     &wad[0..HEADER_LEN]
@@ -101,3 +107,4 @@ pub fn read_header<'a>(wad: &'a [u8]) -> Result<&'a WadHeader, ()> {
 
     Ok(header)
 }
+

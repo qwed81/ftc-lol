@@ -32,19 +32,15 @@ async fn upload(State(state): State<Arc<PkgState>>, mut file: Multipart) -> impl
     // should probably write directly to file, but this is easier and
     // works for now
     let mut buffer = Vec::new();
-    let mut d = 0;
     loop {
         match file.chunk().await {
             Ok(Some(bytes)) => {
-                println!("{}", d);
                 hasher.update(&bytes);
                 buffer.extend(bytes);
-                d += 1;
             },
             Ok(None) => break,
             Err(e) => {
                 let text = e.body_text();
-                println!("{}", &text);
                 return Err((e.status(), text));
             }
         }
