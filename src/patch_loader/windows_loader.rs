@@ -25,11 +25,10 @@ use std::ptr;
 use std::slice;
 use std::time::{Duration, Instant};
 use winapi::ctypes::c_void;
+use std::thread;
 
 use goblin::elf::{Elf, ProgramHeader};
 use goblin::elf64::program_header::PT_LOAD;
-
-use tokio::time;
 
 use super::elf_util::{self, LoadRange};
 use super::ElfLen;
@@ -70,9 +69,9 @@ pub struct PatchLoader {
 }
 
 impl PatchLoader {
-    pub async fn wait_can_patch(process_file_name: &[u8]) -> Result<PatchLoader, LoadError> {
-        let proc = wait_process_created(process_file_name).await?;
-        proc.wait_can_patch().await?;
+    pub fn wait_can_patch(process_file_name: &[u8]) -> Result<PatchLoader, LoadError> {
+        let proc = wait_process_created(process_file_name)?;
+        proc.wait_can_patch()?;
 
         Ok(PatchLoader {
             proc,
@@ -80,8 +79,8 @@ impl PatchLoader {
         })
     }
 
-    pub async fn wait_process_closed(&self) -> Result<(), LoadError> {
-        wait_closed(self.proc.pid).await
+    pub fn wait_process_closed(&self) -> Result<(), LoadError> {
+        wait_closed(self.proc.pid)
     }
 
     pub fn freeze_process(&mut self) -> Result<(), LoadError> {
@@ -233,7 +232,7 @@ impl Process {
         base + offset as ExPtr
     }
 
-    async fn wait_can_patch(&self) -> Result<(), LoadError> {
+    fn wait_can_patch(&self) -> Result<(), LoadError> {
         let mut modules = [ptr::null_mut(); MAX_MODULES];
         let start = Instant::now();
         loop {
@@ -258,7 +257,7 @@ impl Process {
                     });
                 }
 
-                time::sleep(MOD_POLL_DURATION).await;
+                thread::sleep(MOD_POLL_DURATION);
                 continue;
             }
 
@@ -276,7 +275,7 @@ impl Process {
                 });
             }
 
-            time::sleep(MOD_POLL_DURATION).await;
+            thread::sleep(MOD_POLL_DURATION);
         }
     }
 
@@ -575,7 +574,7 @@ fn resume_thread(thread_handle: *mut c_void) -> Result<(), LoadError> {
     Ok(())
 }
 
-async fn wait_closed(pid: u32) -> Result<(), LoadError> {
+fn wait_closed(pid: u32) -> Result<(), LoadError> {
     let mut buf = Vec::with_capacity(MAX_PROCESS_ITER);
     for _ in 0..MAX_PROCESS_ITER {
         buf.push(0);
@@ -607,13 +606,13 @@ async fn wait_closed(pid: u32) -> Result<(), LoadError> {
             break;
         }
 
-        time::sleep(PROCESS_POLL_DURATION).await;
+        thread::sleep(PROCESS_POLL_DURATION);
     }
 
     Ok(())
 }
 
-async fn wait_process_created(process_file_name: &[u8]) -> Result<Process, LoadError> {
+fn wait_process_created(process_file_name: &[u8]) -> Result<Process, LoadError> {
     // we can use the fact the EnumProcesses returns items in the same
     // order they were before if nothing changed to just to an arr comparison
     // which is super cheap compared to other methods
@@ -679,7 +678,7 @@ async fn wait_process_created(process_file_name: &[u8]) -> Result<Process, LoadE
         mem::swap(&mut buf_ref, &mut old_ref);
         old_returned = amt_returned;
 
-        time::sleep(PROCESS_POLL_DURATION).await;
+        thread::sleep(PROCESS_POLL_DURATION);
     };
 
     Ok(Process {

@@ -32,7 +32,7 @@ async fn main() {
     } 
 
     println!("path is: {}", std::str::from_utf8(root_u8_ref).unwrap());
-    let mut loader = PatchLoader::wait_can_patch(lol_path.as_bytes()).await.unwrap();
+    let mut loader = PatchLoader::wait_can_patch(lol_path.as_bytes()).unwrap();
     loader.freeze_process().unwrap();
 
     loader.load_and_resume(&elf_file, root_u8_ref, &seg_table).unwrap();

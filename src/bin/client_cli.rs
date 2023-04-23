@@ -12,8 +12,8 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, RwLock};
-use tokio::time;
+use std::thread;
+use std::sync::{Mutex, RwLock};
 
 fn import(dir: &PkgDir, cache: &mut PkgCache, path: &Path) -> Result<String, ()> {
     let mut file = match File::open(path) {
@@ -99,7 +99,7 @@ where
     }
 }
 
-async fn upload(client: &PkgClient, cache: &PkgCache, hash: &str) -> Result<(), ()> {
+fn upload(client: &PkgClient, cache: &PkgCache, hash: &str) -> Result<(), ()> {
     let hash = match get_prefixed_hash(&hash, cache.hashes()) {
         PrefixedHash::Valid(hash) => hash,
         PrefixedHash::TooMany => {
@@ -111,11 +111,11 @@ async fn upload(client: &PkgClient, cache: &PkgCache, hash: &str) -> Result<(), 
             return Err(());
         }
     };
-    client.upload(String::from(hash)).await
+    client.upload(String::from(hash))
 }
 
-async fn download(client: &PkgClient, cache: &mut PkgCache, hash: &str) -> Result<(), ()> {
-    let hashes = match client.list().await {
+fn download(client: &PkgClient, cache: &mut PkgCache, hash: &str) -> Result<(), ()> {
+    let hashes = match client.list() {
         Ok(hashes) => hashes,
         Err(_) => return Err(()),
     };
@@ -131,7 +131,7 @@ async fn download(client: &PkgClient, cache: &mut PkgCache, hash: &str) -> Resul
             return Err(());
         }
     };
-    client.download(cache, String::from(hash)).await
+    client.download(cache, String::from(hash))
 }
 
 fn remove(dir: &PkgDir, cache: &mut PkgCache, hash: &str) -> Result<(), ()> {
@@ -155,8 +155,8 @@ fn remove(dir: &PkgDir, cache: &mut PkgCache, hash: &str) -> Result<(), ()> {
     }
 }
 
-async fn set(client: &PkgClient, hash: &str, active_text: &str) -> Result<(), ()> {
-    let hashes = match client.list().await {
+fn set(client: &PkgClient, hash: &str, active_text: &str) -> Result<(), ()> {
+    let hashes = match client.list() {
         Ok(hashes) => hashes,
         Err(_) => return Err(()),
     };
@@ -174,8 +174,8 @@ async fn set(client: &PkgClient, hash: &str, active_text: &str) -> Result<(), ()
     };
 
     match active_text {
-        "active" => client.activate(&hash).await,
-        "inactive" => client.deactivate(&hash).await,
+        "active" => client.activate(&hash),
+        "inactive" => client.deactivate(&hash),
         _ => {
             println!("Only active and inactive are allowed as options");
             return Err(());
@@ -194,8 +194,7 @@ where
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let args: Vec<_> = env::args().collect();
     if args.len() < 2 {
         println!("The ip must be supplied as the first argument, and port as the second");
@@ -209,24 +208,28 @@ async fn main() {
     
     // if we put a RW lock on cache, then it ends actually helping us as then downloads will wait
     // on downloads and uploads, but multiple uploads can happen at once
-    let cache = Arc::new(RwLock::new(PkgCache::from_dir(&dir).await.unwrap()));
+    let cache = Arc::new(RwLock::new(PkgCache::from_dir_sync(&dir).unwrap()));
 
     let client = Arc::new(PkgClient::new(dir.as_ref().clone(), ip, port));
     let buffer = Arc::new(Mutex::new(VecDeque::new()));
 
     // this task is responsible for outputting to the
     // console from the buffer and taking in input 
-    tokio::spawn(take_commands(
-        Arc::clone(&client),
-        Arc::clone(&dir),
-        Arc::clone(&cache),
-        Arc::clone(&buffer),
+    let client2 = Arc::clone(&client); 
+    let dir2 = Arc::clone(&dir); 
+    let cache2 = Arc::clone(&cache);
+    let buffer2 = Arc::clone(&buffer);
+    thread::spawn(move || take_commands(
+        client2,
+        dir2,
+        cache2,
+        buffer2,
     ));
 
     // just does a loop trying to load the patch, and pushes
     // to the back of the buffer, so it will be printed when
     // asked by the command
-    load_patch_loop(client, dir, cache, buffer).await;
+    load_patch_loop(client, dir, cache, buffer);
 }
 
 fn get_root_path() -> PathBuf {
@@ -235,7 +238,7 @@ fn get_root_path() -> PathBuf {
     path
 }
 
-async fn take_commands(
+fn take_commands(
     client: Arc<PkgClient>,
     dir: Arc<PkgDir>,
     cache: Arc<RwLock<PkgCache>>,
@@ -264,7 +267,7 @@ async fn take_commands(
                     continue;
                 }
 
-                let mut cache = cache.write().await;
+                let mut cache = cache.write().unwrap();
                 if let Err(_) = import(&dir, &mut cache, &PathBuf::from(cmd[1])) {
                     println!("import failed");
                 }
@@ -275,8 +278,8 @@ async fn take_commands(
                     continue;
                 }
 
-                let cache = cache.read().await;
-                if let Err(_) = upload(&client, &cache, &cmd[1]).await {
+                let cache = cache.read().unwrap();
+                if let Err(_) = upload(&client, &cache, &cmd[1]) {
                     println!("upload failed");
                 }
             }
@@ -286,8 +289,8 @@ async fn take_commands(
                     continue;
                 }
 
-                let mut cache = cache.write().await;
-                if let Err(_) = download(&client, &mut cache, &cmd[1]).await {
+                let mut cache = cache.write().unwrap();
+                if let Err(_) = download(&client, &mut cache, &cmd[1]) {
                     println!("download failed");
                 }
             }
@@ -297,16 +300,16 @@ async fn take_commands(
                     continue;
                 }
 
-                if let Err(_) = set(&client, cmd[1], cmd[2]).await {
+                if let Err(_) = set(&client, cmd[1], cmd[2]) {
                     println!("could not set package state");
                 }
             }
             "local" => {
-                let cache = cache.read().await;
+                let cache = cache.read().unwrap();
                 print_hash_list(cache.hashes())
             }
             "remote" => {
-                let hashes = match client.list().await {
+                let hashes = match client.list() {
                     Ok(hashes) => hashes,
                     Err(_) => {
                         println!("could not get remote package list");
@@ -316,7 +319,7 @@ async fn take_commands(
                 print_hash_list(hashes.iter());
             }
             "active" => {
-                let active = match client.get_active().await {
+                let active = match client.get_active() {
                     Ok(active) => active,
                     Err(_) => {
                         println!("could not get active package");
@@ -335,7 +338,7 @@ async fn take_commands(
                     continue;
                 }
 
-                let mut cache = cache.write().await;
+                let mut cache = cache.write().unwrap();
                 if let Err(_) = remove(&dir, &mut cache, &cmd[1]) {
                     println!("there was an error removing the package");
                 }
@@ -348,14 +351,14 @@ async fn take_commands(
                 std::process::exit(0);
             }
             "cl" => {
-                let mut buffer = buffer.lock().await;
+                let mut buffer = buffer.lock().unwrap();
                 while buffer.is_empty() == false {
                     let message = buffer.pop_front().unwrap();
                     println!("{}", message);
                 }
             }
             "vl" => {
-                for message in buffer.lock().await.iter() {
+                for message in buffer.lock().unwrap().iter() {
                     println!("{}", message);
                 }
             }
@@ -370,13 +373,13 @@ async fn take_commands(
 
 const LOL_PATH: &[u8] = b"C:\\Riot Games\\League of Legends\\Game\\League of Legends.exe";
 
-async fn add_message(buffer: &Arc<Mutex<VecDeque<String>>>, message: String) {
+fn add_message(buffer: &Arc<Mutex<VecDeque<String>>>, message: String) {
     let time = Local::now();
     let message = format!("[{}] {}", time.format("%H:%M:%S"), message);
-    buffer.lock().await.push_back(message);
+    buffer.lock().unwrap().push_back(message);
 }
 
-async fn load_patch_loop(
+fn load_patch_loop(
     client: Arc<PkgClient>,
     dir: Arc<PkgDir>,
     cache: Arc<RwLock<PkgCache>>,
@@ -394,42 +397,42 @@ async fn load_patch_loop(
     }
 
     loop {
-        add_message(&buffer, format!("waiting for process: {}", std::str::from_utf8(LOL_PATH).unwrap())).await;
-        let mut loader = match PatchLoader::wait_can_patch(LOL_PATH).await {
+        add_message(&buffer, format!("waiting for process: {}", std::str::from_utf8(LOL_PATH).unwrap()));
+        let mut loader = match PatchLoader::wait_can_patch(LOL_PATH) {
             Ok(loader) => loader,
             Err(e) => {
                 let m1 = String::from("loader could not wait for process");
                 let m2 = format!("{}, code: {:?}", e.message, e.code);
-                add_message(&buffer, m1).await;
-                add_message(&buffer, m2).await;
+                add_message(&buffer, m1);
+                add_message(&buffer, m2);
                 break;
             }
         };
 
-        add_message(&buffer, String::from("process found")).await;
+        add_message(&buffer, String::from("process found"));
 
         // once the process loads, then freeze it before doing
         // any work to prevent race condition
         if let Err(e) = loader.freeze_process() {
             let m1 = String::from("loader could not freeze process");
             let m2 = format!("{}, code: {:?}", e.message, e.code);
-            add_message(&buffer, m1).await;
-            add_message(&buffer, m2).await;
+            add_message(&buffer, m1);
+            add_message(&buffer, m2);
             break;
         }
 
-        add_message(&buffer, String::from("started loading")).await;
+        add_message(&buffer, String::from("started loading"));
 
-        let active: Option<String> = match client.get_active().await {
+        let active: Option<String> = match client.get_active() {
             Ok(active) => active,
             Err(_) => {
-                add_message(&buffer, String::from("could not get active package, loading game without patch")).await;
+                add_message(&buffer, String::from("could not get active package, loading game without patch"));
                 loader
                     .resume_without_load()
                     .expect("could not resume, manually close LOL");
-                loader.wait_process_closed().await.unwrap();
+                loader.wait_process_closed().unwrap();
 
-                add_message(&buffer, String::from("waiting for exit")).await;
+                add_message(&buffer, String::from("waiting for exit"));
                 continue;
             }
         };
@@ -441,28 +444,28 @@ async fn load_patch_loop(
                     .resume_without_load()
                     .expect("could not resume, manually close LOL");
 
-                loader.wait_process_closed().await.unwrap();
-                add_message(&buffer, String::from("waiting for exit")).await;
+                loader.wait_process_closed().unwrap();
+                add_message(&buffer, String::from("waiting for exit"));
                 continue;
             }
         };
 
         {
-            let mut cache = cache.write().await;
+            let mut cache = cache.write().unwrap();
             if cache.contains(&active) == false {
                 let m1 = format!("do not have {}", &active);
                 let m2 = format!("downloading {}", &active);
-                add_message(&buffer, m1).await;
-                add_message(&buffer, m2).await;
+                add_message(&buffer, m1);
+                add_message(&buffer, m2);
 
-                if let Err(_) = client.download(&mut cache, active.clone()).await {
-                    add_message(&buffer, String::from("package download failed, loading game without patch")).await;
+                if let Err(_) = client.download(&mut cache, active.clone()) {
+                    add_message(&buffer, String::from("package download failed, loading game without patch"));
                     loader
                         .resume_without_load()
                         .expect("could not resume, manually close LOL");
 
-                    loader.wait_process_closed().await.unwrap();
-                    add_message(&buffer, String::from("waiting for exit")).await;
+                    loader.wait_process_closed().unwrap();
+                    add_message(&buffer, String::from("waiting for exit"));
                     continue;
                 }
             }
@@ -479,32 +482,32 @@ async fn load_patch_loop(
                     // get the lock
                     if retry_count < 5 {
                         let message = format!("could not open package file (attempt {}", retry_count);
-                        buffer.lock().await.push_back(message);
+                        buffer.lock().unwrap().push_back(message);
 
                         retry_count += 1;
-                        time::sleep(Duration::from_secs(1)).await;
+                        thread::sleep(Duration::from_secs(1));
                         continue;
                     }
 
-                    add_message(&buffer, String::from("could not open package file, loading game without patch")).await;
+                    add_message(&buffer, String::from("could not open package file, loading game without patch"));
                     loader
                         .resume_without_load()
                         .expect("could not resume, manually close LOL");
-                    loader.wait_process_closed().await.unwrap();
+                    loader.wait_process_closed().unwrap();
                 }
             };
         };
 
         let seg_table = unsafe { MmapOptions::new().map(&seg_table_file) }.unwrap();
         if let Err(_) = loader.load_and_resume(&elf_file, root_u8_ref, &seg_table) {
-            add_message(&buffer, String::from("loader could not load properly, starting game anyways")).await;
+            add_message(&buffer, String::from("loader could not load properly, starting game anyways"));
             loader
                 .resume_without_load()
                 .expect("could not resume, manually close LOL");
         }
 
-        add_message(&buffer, String::from("loaded sucessfully")).await;
-        add_message(&buffer, String::from("waiting for exit")).await;
-        loader.wait_process_closed().await.unwrap();
+        add_message(&buffer, String::from("loaded sucessfully"));
+        add_message(&buffer, String::from("waiting for exit"));
+        loader.wait_process_closed().unwrap();
     }
 }

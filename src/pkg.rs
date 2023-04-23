@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::collections::HashSet;
-use tokio::io;
-use tokio::fs;
+use std::io;
 
 pub mod client;
 pub mod server;
@@ -44,9 +43,20 @@ pub struct PkgCache {
 impl PkgCache {
 
     pub async fn from_dir(dir: &PkgDir) -> io::Result<PkgCache> {
-        let mut dir = fs::read_dir(&dir.root).await?;
+        let mut dir = tokio::fs::read_dir(&dir.root).await?;
         let mut hashes = HashSet::new();
         while let Some(pkg_entry) = dir.next_entry().await? {
+            hashes.insert(String::from(pkg_entry.file_name().to_str().unwrap()));
+        }
+
+        Ok(PkgCache { hashes })
+    }
+
+    pub fn from_dir_sync(dir: &PkgDir) -> io::Result<PkgCache> {
+        let dir = std::fs::read_dir(&dir.root)?;
+        let mut hashes = HashSet::new();
+        for file in dir {
+            let pkg_entry = file?;
             hashes.insert(String::from(pkg_entry.file_name().to_str().unwrap()));
         }
 
