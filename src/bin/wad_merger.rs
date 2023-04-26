@@ -1,24 +1,20 @@
-use skins::segment_table::SegmentTableBuilder;
-use skins::wad;
-use std::fs::{self, File};
+use skins::segment_table;
+use std::fs;
 use std::path::PathBuf;
-use memmap2::MmapOptions;
 
 pub fn main() {
-    let game_path = PathBuf::from("C:/Riot Games/League of Legends/Game/DATA/FINAL");
-    let mut builder = SegmentTableBuilder::index().unwrap();
-    let new_wad = "C:\\Users\\josh\\Desktop\\cslol-manager\\installed\\bowser Jr and bowser\\WAD\\Nunu.wad.client";
-    let file = File::open(new_wad).unwrap();
-    let wad = unsafe { MmapOptions::new().map(&file) }.unwrap();
+    let path = "C:\\Users\\josh\\Desktop\\cslol-manager\\installed\\bowser Jr and bowser\\WAD\\Nunu.wad.client";
+    let path = PathBuf::from(path);
+    let table = segment_table::from_fantome_file(&path).unwrap();
+    fs::write("output.seg", &table).unwrap();
 
-    let header = wad::read_header(&wad).unwrap();
-    for i in 0..header.entry_count as usize {
-        let entry = wad::read_entry(&wad, i).unwrap();
-        builder.replace_entry(&wad, entry);
-    }
+    /* 
+    let old_wad = "C:/Users/josh/Desktop/cslol-manager/profiles/Default Profile/DATA/FINAL/Champions/Nunu.wad.client";
+    let old_file = File::open(old_wad).unwrap();
+    let old_wad = unsafe { MmapOptions::new().map(&old_file) }.unwrap();
+    wad::print_entries(&wad);
+    println!("--------");
+    wad::print_entries(&old_wad);
+    */
 
-    let result = builder.flatten();
-    fs::write("output.seg", &result).unwrap();
-
-    println!("len: {}", result.len());
 }

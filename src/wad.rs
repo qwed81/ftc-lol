@@ -8,7 +8,7 @@ pub struct WadHeader {
     pub magic: [u8; 2],
     pub major_version: u8,
     pub minor_version: u8,
-    pub signature: [u8; 16],
+    pub signature: u128,
     pub signature_unused: [u8; 240],
     pub checksum: u64,
     pub entry_count: u32  
@@ -45,7 +45,7 @@ impl WadEntry {
 
 pub fn print_entries(wad: &[u8]) {
     let header = read_header(wad).unwrap();
-    for i in 0..(header.entry_count as usize) {
+    for i in 0..header.entry_count {
         let entry = read_entry(wad, i).unwrap();
         let offset = entry.offset;
         let len = entry.len;
@@ -53,10 +53,29 @@ pub fn print_entries(wad: &[u8]) {
     }
 }
 
-pub fn get_data_start(wad: &[u8]) -> Result<u32, ()> {
-    let header = read_header(wad)?;
-    let total_entry_size = header.entry_count * mem::size_of::<WadEntry>() as u32;
-    Ok(HEADER_LEN as u32 + total_entry_size)
+pub fn header_as_bytes<'a>(header: &'a WadHeader) -> &'a [u8] {
+    // this is safe because it just reinterprets the value as a byte slice
+    unsafe {
+        std::slice::from_raw_parts(
+            header as *const WadHeader as *const u8,
+            mem::size_of::<WadHeader>(),
+        )
+    }
+}
+
+pub fn entry_as_bytes<'a>(entry: &'a WadEntry) -> &'a [u8] {
+    // this is safe because it just reinterprets the value as a byte slice
+    unsafe {
+        std::slice::from_raw_parts(
+            entry as *const WadEntry as *const u8,
+            mem::size_of::<WadEntry>(),
+        )
+    }
+}
+
+pub fn calc_data_start(entry_count: usize) -> u32 {
+    let amt_added = (entry_count as usize * mem::size_of::<WadEntry>()) as u32;
+    HEADER_LEN as u32 + amt_added
 }
 
 // returns the bytes for just the header
@@ -80,8 +99,8 @@ pub fn read_entry_data<'a>(wad: &'a [u8], entry: &'a WadEntry) -> Result<&'a [u8
     Ok(&wad[offset..offset + len])
 }
 
-pub fn read_entry<'a>(wad: &'a [u8], index: usize) -> Result<&'a WadEntry, ()> {
-    let offset = HEADER_LEN + index * mem::size_of::<WadEntry>();
+pub fn read_entry<'a>(wad: &'a [u8], index: u32) -> Result<&'a WadEntry, ()> {
+    let offset = HEADER_LEN + index as usize * mem::size_of::<WadEntry>();
 
     // make sure that the entry addr is in bounds of the file
     if offset + mem::size_of::<WadEntry>() > wad.len() {
