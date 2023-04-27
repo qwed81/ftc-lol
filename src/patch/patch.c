@@ -86,30 +86,30 @@ void init(BootstrapData* data) {
        GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ,
        NULL, CREATE_ALWAYS, FILE_FLAG_WRITE_THROUGH, NULL);
 
-    log_str(log_handle, "Log file working");
+    log_str(log_handle, "log file working");
     log_str(log_handle, "\nlol module at: ");
     log_int(log_handle, (size_t)data->arg_lol_module);
 
 	if (str_eq((char*)segment_table, "seg") == false) {
-		log_str(log_handle, "Segment table magic not valid");
+		log_str(log_handle, "\nsegment table magic not valid");
 		return;
 	}
 
     post_hook_ReadFile = (ReadFileType) apply_jump_fn_hook(my_ReadFile, __load_ReadFile);
     if (post_hook_ReadFile == NULL) {
-        log_str(log_handle, "\nCould not hook ReadFile");
+        log_str(log_handle, "\ncould not hook ReadFile");
         return;
     }
 
     post_hook_CreateFileA = (CreateFileAType) apply_jump_fn_hook(my_CreateFileA, __load_CreateFileA); 
     if (post_hook_CreateFileA == NULL) {
-        log_str(log_handle, "\nCould not hook CreateFileA");
+        log_str(log_handle, "\ncould not hook CreateFileA");
         return;
     }
 
     post_hook_CreateFileW = (CreateFileWType) apply_jump_fn_hook(my_CreateFileW, __load_CreateFileW); 
     if (post_hook_CreateFileW == NULL) {
-        log_str(log_handle, "\nCould not hook CreateFileW");
+        log_str(log_handle, "\ncould not hook CreateFileW");
         return;
     }
 
@@ -128,7 +128,7 @@ void init(BootstrapData* data) {
 static uint32_t apply_swap_return_hook() {
     void* er = find_mem_pattern(bs_data->arg_lol_module, SEARCH_LEN, FILTER_EXPECTED_RETURN);
     if (er == NULL) {
-        log_str(log_handle, "\nCould not locate expected return");
+        log_str(log_handle, "\ncould not locate expected return");
         return 1;
     }
 
@@ -136,7 +136,7 @@ static uint32_t apply_swap_return_hook() {
 
     void* fn = find_mem_pattern(bs_data->arg_lol_module, SEARCH_LEN, FILTER_FN);
     if (fn == NULL) {
-        log_str(log_handle, "\nCould not locate fn ptr");
+        log_str(log_handle, "\ncould not locate fn ptr");
         return 1;
     }
 
@@ -232,10 +232,10 @@ static void* my_CreateFileA(const char* name, uint32_t access, uint32_t share, v
     // when the first file that starts with DATA comes, 
     // apply the hook
     if (valid_apply == 0 && prefixes_str("DATA", name)) {
-        log_str(log_handle, "\nApplying create file A");
+        log_str(log_handle, "\napplying create file A");
         uint32_t result = apply_swap_return_hook();
         if (result != 0) {
-            log_str(log_handle, "\nCould not apply swap hook, retrying on next file");
+            log_str(log_handle, "\ncould not apply swap hook, retrying on next file");
         } else {
             valid_apply = 1;
         }
@@ -249,9 +249,9 @@ static void* my_CreateFileA(const char* name, uint32_t access, uint32_t share, v
 	FileReplaceHeader* header = lookup_file(name);
 	if (header != NULL) {
 		map_header(handle, header);
-		log_str(log_handle, "\nMapped file: ");
+		log_str(log_handle, "\nmapped file: ");
 		log_str(log_handle, name);
-        log_str(log_handle, ", Handle: ");
+        log_str(log_handle, ", handle: ");
         log_int(log_handle, (size_t)handle);
 	}
 
@@ -266,9 +266,9 @@ static SegmentReplaceEntry* lookup_segment_replace(FileReplaceHeader* header, ui
         SegmentReplaceEntry* entry = &start[i];
         if (entry->start == file_off) {
             if (entry->len != len) {
-                log_str(log_handle, "\nSame interval start with different lengths. file: ");
+                log_str(log_handle, "\nsame interval start with different lengths. file: ");
                 log_str(log_handle, header->name_start);
-                log_str(log_handle, " Entry index: ");
+                log_str(log_handle, " entry index: ");
                 log_int(log_handle, i);
                 return NULL;
             }
@@ -295,7 +295,7 @@ static uint32_t my_ReadFile(void* handle, void* buffer, uint32_t bytes_to_read, 
     */
     SegmentReplaceEntry* seg = lookup_segment_replace(header, file_off, bytes_to_read);
     if (seg == NULL) {
-        log_str(log_handle, "\nCould not find interval of mapped file: ");
+        log_str(log_handle, "\ncould not find interval of mapped file: ");
         log_str(log_handle, header->name_start);
         return post_hook_ReadFile(handle, buffer, bytes_to_read, bytes_read, lp_overlapped);
     }
@@ -363,7 +363,7 @@ static void* apply_jump_fn_hook(void* new_func, void* addr) {
 
     uint32_t protect = VirtualProtect(addr, 20, PAGE_EXECUTE_READWRITE, &old_protect);
     if (protect == 0) {
-        log_str(log_handle, "\nCould not protect mem RWX, error: ");
+        log_str(log_handle, "\ncould not protect mem RWX, error: ");
         log_int(log_handle, GetLastError());
         return NULL;
     }
@@ -384,7 +384,7 @@ static void* apply_jump_fn_hook(void* new_func, void* addr) {
 
     protect = VirtualProtect(addr, 200, PAGE_EXECUTE_READ, &old_protect);
     if (protect == 0) {
-        log_str(log_handle, "\nCould not protect mem RX, error: ");
+        log_str(log_handle, "\ncould not protect mem RX, error: ");
         log_int(log_handle, GetLastError());
         return NULL;
     }
@@ -621,22 +621,22 @@ static void* find_mem_pattern(void* start, uint32_t search_len, const char* patt
 
     int32_t result = interpret_pattern(pattern, buf, skip, &buf_len);
     if (result != 0) {
-        log_str(log_handle, "\nCould not interpret pattern");
+        log_str(log_handle, "\ncould not interpret pattern");
         return (void*)-1;
     }
 
     if (PAGE_LEN < PATTERN_BUF_LEN) {
-        log_str(log_handle, "\nSegment length is less than pattern length");
+        log_str(log_handle, "\nsegment length is less than pattern length");
         return (void*)-1;
     }
 
     if ((size_t)start % PAGE_LEN != 0) {
-        log_str(log_handle, "\nStart not on page boundary");
+        log_str(log_handle, "\nstart not on page boundary");
         return (void*)-1;
     }
 
     if (search_len % PAGE_LEN != 0) {
-        log_str(log_handle, "\nSearch length not on page boundary");
+        log_str(log_handle, "\nsearch length not on page boundary");
         return (void*)-1;
     }
 
