@@ -1,1 +1,10 @@
 /target
+
+# build directories
+/release-full
+/release-min
+
+# to store packages while testing with
+# cargo run
+/client_packages
+/server_packages
