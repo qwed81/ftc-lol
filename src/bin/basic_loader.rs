@@ -14,7 +14,6 @@ fn get_root_path() -> PathBuf {
 #[tokio::main]
 async fn main() {
     let lol_path = "C:\\Riot Games\\League of Legends\\Game\\League of Legends.exe";
-    // let lol_path = "C:\\Program Files\\Notepad++\\notepad++.exe";
 
     let root = get_root_path();
     let elf_file = File::open(root.join("patch")).unwrap();

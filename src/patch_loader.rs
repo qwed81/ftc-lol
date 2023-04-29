@@ -1,8 +1,10 @@
+// this should be changed when more targets are supported, gets rid
+// of unused warnings for now
+#[cfg(target_os="windows")]
 mod elf_util;
 
 // determine the loader dependent on the target platform
 #[cfg(target_os="windows")]
-#[cfg(target_arch="x86_64")]
 mod windows_loader;
 #[cfg(target_os="windows")]
 pub use windows_loader::PatchLoader as PatchLoader;
