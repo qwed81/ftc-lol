@@ -1,6 +1,10 @@
-use super::{PkgCache, PkgDir, ActivePkg};
-use reqwest::blocking::{
-    multipart::{Form, Part}, Client,
+use super::{ActivePkg, PkgCache, PkgDir};
+use reqwest::{
+    blocking::{
+        multipart::{Form, Part},
+        Client,
+    },
+    StatusCode,
 };
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
@@ -30,22 +34,17 @@ impl PkgClient {
             .get_pkg_path(&hash)
             .expect("Hash not valid to create path");
 
-        let part_result = match Part::file(&path) {
-            Ok(part) => part,
-            Err(_) => return Err(()),
-        }.file_name(hash).mime_str("application/octet-stream");
-
-        let part = match part_result {
-            Ok(part) => part,
-            Err(_) => return Err(())
-        };
+        let Ok(part) = Part::file(&path) else { return Err(()) };
+        let Ok(part) = part.file_name(hash).mime_str("application/octet-stream") else { return Err(()) };
 
         let form = Form::new().part("upload", part);
-        let _ = match self.client.post(route).multipart(form).send() {
-            Ok(res) => res,
-            Err(_) => return Err(()),
+        let Ok(res) = self.client.post(route).multipart(form).send() else {
+            return Err(());
         };
 
+        if res.status() != StatusCode::OK {
+            return Err(());
+        }
         Ok(())
     }
 
@@ -79,8 +78,7 @@ impl PkgClient {
         let hash_string = format!("{:x}", hasher.finalize());
 
         if &hash_string != &hash {
-            fs::remove_file(path)
-                .expect("Could not remove invalid file");
+            fs::remove_file(path).expect("Could not remove invalid file");
 
             return Err(());
         }
@@ -100,7 +98,7 @@ impl PkgClient {
         let route = format!("http://{}:{}/activate/{}", self.ip, self.port, hash);
         match self.client.post(route).send() {
             Ok(_) => Ok(()),
-            Err(_) => Err(())
+            Err(_) => Err(()),
         }
     }
 
@@ -108,7 +106,7 @@ impl PkgClient {
         let route = format!("http://{}:{}/deactivate/{}", self.ip, self.port, hash);
         match self.client.post(route).send() {
             Ok(_) => Ok(()),
-            Err(_) => Err(())
+            Err(_) => Err(()),
         }
     }
 
@@ -116,12 +114,12 @@ impl PkgClient {
         let route = format!("http://{}:{}/get-active", self.ip, self.port);
         let res = match self.client.get(route).send() {
             Ok(res) => res,
-            Err(_) => return Err(())
+            Err(_) => return Err(()),
         };
 
         let active = match res.json::<ActivePkg>() {
             Ok(active) => active,
-            Err(_) => return Err(())
+            Err(_) => return Err(()),
         };
 
         Ok(active.hash)

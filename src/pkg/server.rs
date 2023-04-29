@@ -183,7 +183,7 @@ pub async fn listen(dir: PkgDir, cache: PkgCache, port: u16) {
             cache: RwLock::new(cache),
             active_pkg_hash: RwLock::new(None),
         }))
-        .layer(DefaultBodyLimit::max(1024 * 1024 * 10)); // 10mb max file size
+        .layer(DefaultBodyLimit::max(1024 * 1024 * 50)); // 10mb max file size
 
     let addr: SocketAddrV4 = format!("127.0.0.1:{}", port).parse().unwrap();
     Server::bind(&SocketAddr::V4(addr))
