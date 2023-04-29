@@ -89,6 +89,13 @@ impl PkgClient {
         return Ok(());
     }
 
+    pub fn get_status(&self) -> Result<String, ()> {
+        let route = format!("http://{}:{}/status", self.ip, self.port);
+        let res = self.client.get(route).send().map_err(|_| ())?;
+        let text = res.text().map_err(|_| ())?;
+        Ok(text)
+    }
+
     pub fn activate(&self, hash: &str) -> Result<(), ()> {
         let route = format!("http://{}:{}/activate/{}", self.ip, self.port, hash);
         match self.client.post(route).send() {

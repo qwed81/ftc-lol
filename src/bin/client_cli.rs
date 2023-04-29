@@ -11,9 +11,9 @@ use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
-use std::thread;
 use std::sync::{Mutex, RwLock};
+use std::thread;
+use std::time::{Duration, Instant};
 
 fn import(dir: &PkgDir, cache: &mut PkgCache, path: &Path) -> Result<String, ()> {
     let mut file = match File::open(path) {
@@ -55,6 +55,7 @@ fn import(dir: &PkgDir, cache: &mut PkgCache, path: &Path) -> Result<String, ()>
 }
 
 fn print_help() {
+    println!("status - returns message from the server to test connection");
     println!("import [path] - copies and hashes a seg file to local package list");
     println!("upload [hash] - uploades a package to the remote package list");
     println!("download [hash] - downloads a package from the server manually");
@@ -205,7 +206,7 @@ fn main() {
     let port = args[2].parse().unwrap();
 
     let dir = Arc::new(PkgDir::new(PathBuf::from("client_packages")));
-    
+
     // if we put a RW lock on cache, then it ends actually helping us as then downloads will wait
     // on downloads and uploads, but multiple uploads can happen at once
     let cache = Arc::new(RwLock::new(PkgCache::from_dir_sync(&dir).unwrap()));
@@ -214,17 +215,12 @@ fn main() {
     let buffer = Arc::new(Mutex::new(VecDeque::new()));
 
     // this task is responsible for outputting to the
-    // console from the buffer and taking in input 
-    let client2 = Arc::clone(&client); 
-    let dir2 = Arc::clone(&dir); 
+    // console from the buffer and taking in input
+    let client2 = Arc::clone(&client);
+    let dir2 = Arc::clone(&dir);
     let cache2 = Arc::clone(&cache);
     let buffer2 = Arc::clone(&buffer);
-    thread::spawn(move || take_commands(
-        client2,
-        dir2,
-        cache2,
-        buffer2,
-    ));
+    thread::spawn(move || take_commands(client2, dir2, cache2, buffer2));
 
     // just does a loop trying to load the patch, and pushes
     // to the back of the buffer, so it will be printed when
@@ -238,6 +234,17 @@ fn get_root_path() -> PathBuf {
     path
 }
 
+fn print_status(client: &PkgClient) {
+    let start = Instant::now();
+    let status_result = client.get_status();
+    let time_taken = (Instant::now() - start).as_millis();
+
+    match status_result {
+        Ok(status) => println!("status: {}, delay: {}ms", status, time_taken),
+        Err(_) => println!("the server could not be reached"),
+    }
+}
+
 fn take_commands(
     client: Arc<PkgClient>,
     dir: Arc<PkgDir>,
@@ -247,6 +254,7 @@ fn take_commands(
     let stdin = io::stdin();
     let mut str_buf = String::new();
     println!("client cli, type help for commands");
+    print_status(&client);
 
     loop {
         print!("> ");
@@ -261,6 +269,7 @@ fn take_commands(
 
         match cmd[0] {
             "help" => print_help(),
+            "status" => print_status(&client),
             "import" => {
                 if cmd.len() < 2 {
                     println!("import requires a path");
@@ -397,7 +406,13 @@ fn load_patch_loop(
     }
 
     loop {
-        add_message(&buffer, format!("waiting for process: {}", std::str::from_utf8(LOL_PATH).unwrap()));
+        add_message(
+            &buffer,
+            format!(
+                "waiting for process: {}",
+                std::str::from_utf8(LOL_PATH).unwrap()
+            ),
+        );
         let mut loader = match PatchLoader::wait_can_patch(LOL_PATH) {
             Ok(loader) => loader,
             Err(e) => {
@@ -426,7 +441,10 @@ fn load_patch_loop(
         let active: Option<String> = match client.get_active() {
             Ok(active) => active,
             Err(_) => {
-                add_message(&buffer, String::from("could not get active package, loading game without patch"));
+                add_message(
+                    &buffer,
+                    String::from("could not get active package, loading game without patch"),
+                );
                 loader
                     .resume_without_load()
                     .expect("could not resume, manually close LOL");
@@ -459,7 +477,10 @@ fn load_patch_loop(
                 add_message(&buffer, m2);
 
                 if let Err(_) = client.download(&mut cache, active.clone()) {
-                    add_message(&buffer, String::from("package download failed, loading game without patch"));
+                    add_message(
+                        &buffer,
+                        String::from("package download failed, loading game without patch"),
+                    );
                     loader
                         .resume_without_load()
                         .expect("could not resume, manually close LOL");
@@ -481,7 +502,8 @@ fn load_patch_loop(
                     // the downloader will still have the lock on it. Keep trying to
                     // get the lock
                     if retry_count < 5 {
-                        let message = format!("could not open package file (attempt {}", retry_count);
+                        let message =
+                            format!("could not open package file (attempt {}", retry_count);
                         buffer.lock().unwrap().push_back(message);
 
                         retry_count += 1;
@@ -489,7 +511,10 @@ fn load_patch_loop(
                         continue;
                     }
 
-                    add_message(&buffer, String::from("could not open package file, loading game without patch"));
+                    add_message(
+                        &buffer,
+                        String::from("could not open package file, loading game without patch"),
+                    );
                     loader
                         .resume_without_load()
                         .expect("could not resume, manually close LOL");
@@ -500,7 +525,10 @@ fn load_patch_loop(
 
         let seg_table = unsafe { MmapOptions::new().map(&seg_table_file) }.unwrap();
         if let Err(_) = loader.load_and_resume(&elf_file, root_u8_ref, &seg_table) {
-            add_message(&buffer, String::from("loader could not load properly, starting game anyways"));
+            add_message(
+                &buffer,
+                String::from("loader could not load properly, starting game anyways"),
+            );
             loader
                 .resume_without_load()
                 .expect("could not resume, manually close LOL");

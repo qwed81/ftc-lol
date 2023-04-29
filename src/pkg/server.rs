@@ -111,6 +111,10 @@ async fn download(
     Ok((headers, body))
 }
 
+async fn status_check() -> impl IntoResponse {
+    "OK"
+}
+
 async fn get_active(State(state): State<Arc<PkgState>>) -> impl IntoResponse {
     let active = match state.active_pkg_hash.read().unwrap().as_deref() {
         Some(hash) => Some(hash.to_owned()),
@@ -167,6 +171,7 @@ async fn deactivate(
 
 pub async fn listen(dir: PkgDir, cache: PkgCache, port: u16) {
     let router = Router::new()
+        .route("/status", get(status_check))
         .route("/get-active", get(get_active))
         .route("/upload", post(upload))
         .route("/list", get(list))

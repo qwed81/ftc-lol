@@ -1,3 +1,5 @@
+use std::thread;
+use std::time::Duration;
 use super::LoadError;
 
 pub struct PatchLoader;
@@ -7,7 +9,10 @@ pub struct PatchLoader;
 // for linux targets
 impl PatchLoader {
     pub fn wait_can_patch(_name: &[u8]) -> Result<PatchLoader, LoadError> {
-        todo!();
+        // just loop infinitely
+        loop {
+            thread::sleep(Duration::from_secs(100));
+        }
     }
 
     pub fn freeze_process(&mut self) -> Result<(), LoadError> {
