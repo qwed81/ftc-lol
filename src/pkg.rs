@@ -1,27 +1,24 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::collections::HashSet;
 use std::io;
+use std::path::PathBuf;
 
 pub mod client;
 pub mod server;
 
 #[derive(Clone)]
 pub struct PkgDir {
-    root: PathBuf
+    root: PathBuf,
 }
 
 #[derive(Deserialize, Serialize)]
 pub struct ActivePkg {
-    hash: Option<String>
+    hash: Option<String>,
 }
 
 impl PkgDir {
-
     pub fn new(root: PathBuf) -> PkgDir {
-        PkgDir {
-            root
-        }
+        PkgDir { root }
     }
 
     pub fn get_pkg_path(&self, hash: &str) -> Option<PathBuf> {
@@ -37,11 +34,10 @@ impl PkgDir {
 }
 
 pub struct PkgCache {
-    hashes: HashSet<String>
+    hashes: HashSet<String>,
 }
 
 impl PkgCache {
-
     pub async fn from_dir(dir: &PkgDir) -> io::Result<PkgCache> {
         let mut dir = tokio::fs::read_dir(&dir.root).await?;
         let mut hashes = HashSet::new();
@@ -75,7 +71,7 @@ impl PkgCache {
         self.hashes.insert(hash);
     }
 
-    pub fn hashes(&self) -> impl Iterator<Item=&str> {
+    pub fn hashes(&self) -> impl Iterator<Item = &str> {
         self.hashes.iter().map(|x| x.as_str())
     }
 }

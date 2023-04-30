@@ -1,6 +1,6 @@
-use std::path::PathBuf;
-use skins::pkg::{PkgDir, PkgCache, server};
+use ftc::pkg::{server, PkgCache, PkgDir};
 use std::env;
+use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() {

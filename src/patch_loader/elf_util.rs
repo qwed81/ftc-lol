@@ -5,7 +5,7 @@ use super::{ElfOff, MemProt};
 
 pub struct LoadRange {
     pub elf_start: ElfOff,
-    pub elf_end: ElfOff
+    pub elf_end: ElfOff,
 }
 
 pub fn get_sym_offset(elf: &Elf, sym_name: &str) -> Option<ElfOff> {
@@ -24,7 +24,10 @@ pub fn get_load_symbols<'a>(elf: &'a Elf) -> Vec<(&'a str, ElfOff)> {
     for sym in &elf.syms {
         let name = elf.strtab.get_at(sym.st_name).unwrap();
         if name.starts_with("__load_") {
-            vals.push((name.strip_prefix("__load_").unwrap(), sym.st_value as ElfOff));
+            vals.push((
+                name.strip_prefix("__load_").unwrap(),
+                sym.st_value as ElfOff,
+            ));
         }
     }
 
@@ -69,5 +72,8 @@ pub fn get_load_range(headers: &[ProgramHeader]) -> LoadRange {
         .try_into()
         .unwrap();
 
-    LoadRange { elf_start: mem_start, elf_end: mem_end }
+    LoadRange {
+        elf_start: mem_start,
+        elf_end: mem_end,
+    }
 }

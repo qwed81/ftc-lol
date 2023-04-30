@@ -1,6 +1,6 @@
+use super::LoadError;
 use std::thread;
 use std::time::Duration;
-use super::LoadError;
 
 pub struct PatchLoader;
 

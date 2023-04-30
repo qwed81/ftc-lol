@@ -1,4 +1,4 @@
-use super::{PkgCache, PkgDir, ActivePkg};
+use super::{ActivePkg, PkgCache, PkgDir};
 use axum::body::StreamBody;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::http::{header, StatusCode};
@@ -28,7 +28,7 @@ async fn upload(State(state): State<Arc<PkgState>>, mut file: Multipart) -> impl
     };
 
     let mut hasher = Sha256::new();
-    
+
     // should probably write directly to file, but this is easier and
     // works for now
     let mut buffer = Vec::new();
@@ -37,14 +37,14 @@ async fn upload(State(state): State<Arc<PkgState>>, mut file: Multipart) -> impl
             Ok(Some(bytes)) => {
                 hasher.update(&bytes);
                 buffer.extend(bytes);
-            },
+            }
             Ok(None) => break,
             Err(e) => {
                 let text = e.body_text();
                 return Err((e.status(), text));
             }
         }
-    };
+    }
 
     let hash_string = format!("{:x}", hasher.finalize());
 
@@ -118,12 +118,10 @@ async fn status_check() -> impl IntoResponse {
 async fn get_active(State(state): State<Arc<PkgState>>) -> impl IntoResponse {
     let active = match state.active_pkg_hash.read().unwrap().as_deref() {
         Some(hash) => Some(hash.to_owned()),
-        None => None
+        None => None,
     };
 
-    Json(ActivePkg {
-        hash: active
-    })
+    Json(ActivePkg { hash: active })
 }
 
 async fn list(State(state): State<Arc<PkgState>>) -> impl IntoResponse {

@@ -1,7 +1,7 @@
 use std::env;
-use std::process::Command;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 
 fn execute(wd: &str, cmd_str: String) {
     let args: Vec<&str> = cmd_str.split_whitespace().collect();

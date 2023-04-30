@@ -23,9 +23,9 @@ use std::mem;
 use std::mem::MaybeUninit;
 use std::ptr;
 use std::slice;
+use std::thread;
 use std::time::{Duration, Instant};
 use winapi::ctypes::c_void;
-use std::thread;
 
 use goblin::elf::{Elf, ProgramHeader};
 use goblin::elf64::program_header::PT_LOAD;
@@ -194,7 +194,7 @@ impl PatchLoader {
             if addr.is_null() {
                 return Err(LoadError {
                     message: format!("could not get address for function: {}", func_name),
-                    code: None
+                    code: None,
                 });
             }
 
@@ -253,7 +253,7 @@ impl Process {
                 if err != 299 {
                     return Err(LoadError {
                         message: format!("error while enumerating modules"),
-                        code: Some(err)
+                        code: Some(err),
                     });
                 }
 
@@ -271,7 +271,7 @@ impl Process {
             if Instant::now() - start > TIME_BEFORE_MOD_POLL_FAIL {
                 return Err(LoadError {
                     message: format!("waiting for patchable timed out"),
-                    code: None
+                    code: None,
                 });
             }
 
@@ -300,7 +300,7 @@ impl Process {
             let err = unsafe { errhandlingapi::GetLastError() };
             return Err(LoadError {
                 message: format!("could not reserve memory at: {:x}, len: {}", start, len),
-                code: Some(err)
+                code: Some(err),
             });
         }
 
@@ -324,7 +324,7 @@ impl Process {
             let err = unsafe { errhandlingapi::GetLastError() };
             return Err(LoadError {
                 message: format!("could not map segment, addr: {:x}", actual_addr as ExPtr),
-                code: Some(err)
+                code: Some(err),
             });
         }
 
@@ -351,7 +351,7 @@ impl Process {
             let err = unsafe { errhandlingapi::GetLastError() };
             return Err(LoadError {
                 message: format!("could not write memory, addr: {:x}", addr),
-                code: Some(err)
+                code: Some(err),
             });
         }
 
@@ -386,7 +386,7 @@ impl Process {
             let err = unsafe { errhandlingapi::GetLastError() };
             return Err(LoadError {
                 message: format!("could not protect memory, addr: {:x}", addr),
-                code: Some(err)
+                code: Some(err),
             });
         }
 
@@ -400,7 +400,7 @@ impl Process {
             let err = unsafe { errhandlingapi::GetLastError() };
             return Err(LoadError {
                 message: format!("could not take thread snapshot"),
-                code: Some(err)
+                code: Some(err),
             });
         }
 
@@ -417,7 +417,7 @@ impl Process {
                 let err = unsafe { errhandlingapi::GetLastError() };
                 return Err(LoadError {
                     message: format!("could not get thread info"),
-                    code: Some(err)
+                    code: Some(err),
                 });
             }
         };
@@ -429,7 +429,7 @@ impl Process {
             let err = unsafe { errhandlingapi::GetLastError() };
             return Err(LoadError {
                 message: format!("could not open thread, id: {:x}", thread_id),
-                code: Some(err)
+                code: Some(err),
             });
         }
 
@@ -451,7 +451,7 @@ impl Process {
             let err = unsafe { errhandlingapi::GetLastError() };
             return Err(LoadError {
                 message: format!("could not allocate mem, addr: {:x}", addr),
-                code: Some(err)
+                code: Some(err),
             });
         }
 
@@ -470,9 +470,9 @@ impl Process {
 
         if context_result == 0 {
             let err = unsafe { errhandlingapi::GetLastError() };
-            return Err(LoadError { 
+            return Err(LoadError {
                 message: format!("could not get thread context"),
-                code: Some(err) 
+                code: Some(err),
             });
         }
 
@@ -491,9 +491,9 @@ impl Process {
 
         if context_result == 0 {
             let err = unsafe { errhandlingapi::GetLastError() };
-            return Err(LoadError { 
+            return Err(LoadError {
                 message: format!("could not set thread context"),
-                code: Some(err) 
+                code: Some(err),
             });
         }
 
@@ -553,7 +553,7 @@ fn suspend_thread(thread_handle: *mut c_void) -> Result<(), LoadError> {
         let err = unsafe { errhandlingapi::GetLastError() };
         return Err(LoadError {
             message: format!("could not suspend thread"),
-            code: Some(err)
+            code: Some(err),
         });
     }
 
@@ -567,7 +567,7 @@ fn resume_thread(thread_handle: *mut c_void) -> Result<(), LoadError> {
         let err = unsafe { errhandlingapi::GetLastError() };
         return Err(LoadError {
             message: format!("could not resume thread"),
-            code: Some(err)
+            code: Some(err),
         });
     }
 
@@ -589,7 +589,7 @@ fn wait_closed(pid: u32) -> Result<(), LoadError> {
             let err = unsafe { errhandlingapi::GetLastError() };
             return Err(LoadError {
                 message: format!("could not enumerate processes"),
-                code: Some(err)
+                code: Some(err),
             });
         }
 
@@ -646,7 +646,7 @@ fn wait_process_created(process_file_name: &[u8]) -> Result<Process, LoadError> 
             let err = unsafe { errhandlingapi::GetLastError() };
             return Err(LoadError {
                 message: format!("could not enumerate processes"),
-                code: Some(err)
+                code: Some(err),
             });
         }
 

@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use xxhash_rust::xxh3::Xxh3;
 
 pub fn from_combined_dir(mod_dir: &Path) -> Result<Vec<u8>, ()> {
-    
     // get all files in the mod dir and map them
     let mut paths = Vec::new();
     add_paths_recur(mod_dir, &mut paths);
@@ -88,14 +87,13 @@ pub fn from_combined_dir(mod_dir: &Path) -> Result<Vec<u8>, ()> {
     }
 
     Ok(flatten_file_replace(file_replaces))
-
 }
 
 pub fn from_fantome_file(path: &Path) -> Result<Vec<u8>, ()> {
     // index the full game add all of the files to the files vec
     let mut files: Vec<IndexedFile> = Vec::new();
     index_files_recur(&PathBuf::from(crate::LOL_PATH), &mut files).unwrap();
-    
+
     // go through the entries and add them to the file
     for i in 0..files.len() {
         let file = &mut files[i];
@@ -149,10 +147,12 @@ pub fn from_fantome_file(path: &Path) -> Result<Vec<u8>, ()> {
         hasher.update(&wad::slice_header(&file.data)[0..4]);
         for entry in entries.clone() {
             let entry = match entry {
-                &Entry::GameEntry { entry_index, off: _, len: _ } => {
-                    wad::read_entry(&file.data, entry_index).unwrap()
-                }
-                &Entry::ModEntry { entry, data: _ } => entry
+                &Entry::GameEntry {
+                    entry_index,
+                    off: _,
+                    len: _,
+                } => wad::read_entry(&file.data, entry_index).unwrap(),
+                &Entry::ModEntry { entry, data: _ } => entry,
             };
 
             hasher.update(&entry.name.to_le_bytes());
@@ -176,7 +176,11 @@ pub fn from_fantome_file(path: &Path) -> Result<Vec<u8>, ()> {
         let mut virtual_offset = wad::calc_data_start(entry_count);
         for entry in entries {
             match entry {
-                &Entry::GameEntry { entry_index, off, len } => {
+                &Entry::GameEntry {
+                    entry_index,
+                    off,
+                    len,
+                } => {
                     segments.push(SegmentReplace::GameSegment {
                         start: virtual_offset,
                         len,
@@ -193,7 +197,7 @@ pub fn from_fantome_file(path: &Path) -> Result<Vec<u8>, ()> {
                 &Entry::ModEntry { entry, data } => {
                     segments.push(SegmentReplace::ModSegment {
                         start: virtual_offset,
-                        data
+                        data,
                     });
 
                     let mut new_entry = entry.clone();
@@ -219,13 +223,13 @@ pub fn from_fantome_file(path: &Path) -> Result<Vec<u8>, ()> {
             continue;
         }
 
-        file_replace[file_replace_index].segments[0] = SegmentReplace::ModSegment { 
+        file_replace[file_replace_index].segments[0] = SegmentReplace::ModSegment {
             start: 0,
-            data: &header_list[file_replace_index]
+            data: &header_list[file_replace_index],
         };
-        file_replace[file_replace_index].segments[1] = SegmentReplace::ModSegment { 
+        file_replace[file_replace_index].segments[1] = SegmentReplace::ModSegment {
             start: wad::HEADER_LEN as u32,
-            data: &entry_table_list[file_replace_index]  
+            data: &entry_table_list[file_replace_index],
         };
         file_replace_index += 1;
     }
@@ -247,7 +251,12 @@ fn replace_entry<'a>(indexed_file: &mut IndexedFile<'a>, wad: &'a [u8], entry: &
     }
 
     // TODO, detect which entry extra names belong to
-    if indexed_file.path.to_str().unwrap().contains("Nunu.wad.client") {
+    if indexed_file
+        .path
+        .to_str()
+        .unwrap()
+        .contains("Nunu.wad.client")
+    {
         indexed_file.entries_modified = true;
         indexed_file.entries.insert(
             entry.name,
@@ -280,7 +289,7 @@ fn index_files_recur(path: &Path, files: &mut Vec<IndexedFile>) -> io::Result<()
                 path,
                 data: mmap,
                 entries: HashMap::new(),
-                entries_modified: false
+                entries_modified: false,
             });
         }
     }
@@ -320,7 +329,6 @@ fn add_paths_recur(path: &Path, path_list: &mut Vec<PathBuf>) {
     }
 }
 
-
 #[derive(Clone)]
 enum SegmentReplace<'a> {
     GameSegment { start: u32, len: u32, data_off: u32 },
@@ -334,14 +342,21 @@ struct FileReplace<'a> {
 }
 
 enum Entry<'a> {
-    GameEntry { entry_index: u32, off: u32, len: u32 },
-    ModEntry { entry: &'a WadEntry, data: &'a [u8] },
+    GameEntry {
+        entry_index: u32,
+        off: u32,
+        len: u32,
+    },
+    ModEntry {
+        entry: &'a WadEntry,
+        data: &'a [u8],
+    },
 }
 struct IndexedFile<'a> {
     path: PathBuf,
     data: Mmap,
     entries: HashMap<u64, Entry<'a>>,
-    entries_modified: bool
+    entries_modified: bool,
 }
 
 fn start_of(seg: &SegmentReplace) -> u32 {
@@ -373,7 +388,6 @@ fn set_u32(vec: &mut Vec<u8>, val: u32, index: usize) {
 }
 
 fn flatten_file_replace(files: Vec<FileReplace>) -> Vec<u8> {
-
     let mut buf = Vec::new();
     buf.extend(&[b's', b'e', b'g', 0]);
     push_u32(&mut buf, files.len() as u32);
