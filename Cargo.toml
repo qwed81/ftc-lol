@@ -22,3 +22,4 @@ reqwest = { version = "0.11.16", features=["multipart", "blocking", "stream", "j
 axum = { version="0.6.15", features=["multipart"]}
 tokio-util = { version="0.7.7", features=["io", "codec"] }
 chrono = "0.4.24"
+dotenvy = "0.15.7"

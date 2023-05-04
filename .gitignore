@@ -1,6 +1,13 @@
+# build output directory
 /target
 
 # to store packages while testing with
 # cargo run
 /client_packages
 /server_packages
+/mods
+/segs
+
+# ignore environment variables
+client.env
+server.env

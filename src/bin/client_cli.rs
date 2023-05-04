@@ -9,6 +9,7 @@ use std::collections::VecDeque;
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, Write};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::{Mutex, RwLock};
@@ -196,22 +197,21 @@ where
 }
 
 fn main() {
-    let args: Vec<_> = env::args().collect();
-    if args.len() < 2 {
-        println!("The ip must be supplied as the first argument, and port as the second");
-        return;
-    }
+    dotenvy::from_path("client.env").expect("client.env required");
 
-    let ip = args[1].clone();
-    let port = args[2].parse().unwrap();
+    let connect_to = env::var("CONNECT_TO").expect("CONNECT_TO environment varible required");
+    let addr: SocketAddr = connect_to
+        .parse()
+        .expect("CONNECT_TO not valid socket addr");
+    let pkg_path = env::var("PKG_PATH").expect("PKG_PATH environment variable required");
 
-    let dir = Arc::new(PkgDir::new(PathBuf::from("client_packages")));
+    let dir = Arc::new(PkgDir::new(PathBuf::from(pkg_path)));
 
     // if we put a RW lock on cache, then it ends actually helping us as then downloads will wait
     // on downloads and uploads, but multiple uploads can happen at once
     let cache = Arc::new(RwLock::new(PkgCache::from_dir_sync(&dir).unwrap()));
 
-    let client = Arc::new(PkgClient::new(dir.as_ref().clone(), ip, port));
+    let client = Arc::new(PkgClient::new(dir.as_ref().clone(), &addr));
     let buffer = Arc::new(Mutex::new(VecDeque::new()));
 
     // this task is responsible for outputting to the
@@ -406,10 +406,7 @@ fn load_patch_loop(
     loop {
         add_message(
             &buffer,
-            format!(
-                "waiting for process: {:?}",
-                ftc::lol_exe_path()
-            ),
+            format!("waiting for process: {:?}", ftc::lol_exe_path()),
         );
         let mut loader = match PatchLoader::wait_can_patch(&ftc::lol_exe_path()) {
             Ok(loader) => loader,

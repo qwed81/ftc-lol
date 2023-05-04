@@ -2,18 +2,16 @@ use ftc::pkg::{server, PkgCache, PkgDir};
 use std::env;
 use std::path::PathBuf;
 
+const PORT: u16 = 9313;
+
 #[tokio::main]
 async fn main() {
-    let args: Vec<_> = env::args().collect();
-    if args.len() < 2 {
-        println!("The port must be supplied as the first argument");
-        return;
-    }
+    dotenvy::from_path("server.env").expect("server.env required");
 
-    let port = args[1].parse().unwrap();
-    let dir = PkgDir::new(PathBuf::from("server_packages"));
+    let pkg_path = env::var("PKG_PATH").expect("PKG_PATH environment variable required");
+    let dir = PkgDir::new(PathBuf::from(pkg_path));
     let cache = PkgCache::from_dir(&dir).await.unwrap();
 
-    println!("listening on port: {}", port);
-    server::listen(dir, cache, port).await;
+    println!("listening on port: {}", PORT);
+    server::listen(dir, cache, PORT).await;
 }

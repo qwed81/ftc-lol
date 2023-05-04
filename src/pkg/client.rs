@@ -9,6 +9,7 @@ use reqwest::{
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::Write;
+use std::net::SocketAddr;
 
 pub struct PkgClient {
     client: Client,
@@ -18,11 +19,11 @@ pub struct PkgClient {
 }
 
 impl PkgClient {
-    pub fn new(dir: PkgDir, ip: String, port: u16) -> PkgClient {
+    pub fn new(dir: PkgDir, addr: &SocketAddr) -> PkgClient {
         PkgClient {
             client: Client::new(),
-            ip,
-            port,
+            ip: addr.ip().to_string(),
+            port: addr.port(),
             dir,
         }
     }
