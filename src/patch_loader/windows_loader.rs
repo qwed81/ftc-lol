@@ -21,11 +21,13 @@ use std::collections::HashSet;
 use std::ffi::CString;
 use std::mem;
 use std::mem::MaybeUninit;
+use std::path::Path;
+use std::path::PathBuf;
 use std::ptr;
 use std::slice;
+use std::thread;
 use std::time::{Duration, Instant};
 use winapi::ctypes::c_void;
-use std::thread;
 
 use goblin::elf::{Elf, ProgramHeader};
 use goblin::elf64::program_header::PT_LOAD;
@@ -69,8 +71,8 @@ pub struct PatchLoader {
 }
 
 impl PatchLoader {
-    pub fn wait_can_patch(process_file_name: &[u8]) -> Result<PatchLoader, LoadError> {
-        let proc = wait_process_created(process_file_name)?;
+    pub fn wait_can_patch(process_exe_path: &Path) -> Result<PatchLoader, LoadError> {
+        let proc = wait_process_created(process_exe_path)?;
         proc.wait_can_patch()?;
 
         Ok(PatchLoader {
@@ -194,7 +196,7 @@ impl PatchLoader {
             if addr.is_null() {
                 return Err(LoadError {
                     message: format!("could not get address for function: {}", func_name),
-                    code: None
+                    code: None,
                 });
             }
 
@@ -253,7 +255,7 @@ impl Process {
                 if err != 299 {
                     return Err(LoadError {
                         message: format!("error while enumerating modules"),
-                        code: Some(err)
+                        code: Some(err),
                     });
                 }
 
@@ -271,7 +273,7 @@ impl Process {
             if Instant::now() - start > TIME_BEFORE_MOD_POLL_FAIL {
                 return Err(LoadError {
                     message: format!("waiting for patchable timed out"),
-                    code: None
+                    code: None,
                 });
             }
 
@@ -300,7 +302,7 @@ impl Process {
             let err = unsafe { errhandlingapi::GetLastError() };
             return Err(LoadError {
                 message: format!("could not reserve memory at: {:x}, len: {}", start, len),
-                code: Some(err)
+                code: Some(err),
             });
         }
 
@@ -324,7 +326,7 @@ impl Process {
             let err = unsafe { errhandlingapi::GetLastError() };
             return Err(LoadError {
                 message: format!("could not map segment, addr: {:x}", actual_addr as ExPtr),
-                code: Some(err)
+                code: Some(err),
             });
         }
 
@@ -351,7 +353,7 @@ impl Process {
             let err = unsafe { errhandlingapi::GetLastError() };
             return Err(LoadError {
                 message: format!("could not write memory, addr: {:x}", addr),
-                code: Some(err)
+                code: Some(err),
             });
         }
 
@@ -386,7 +388,7 @@ impl Process {
             let err = unsafe { errhandlingapi::GetLastError() };
             return Err(LoadError {
                 message: format!("could not protect memory, addr: {:x}", addr),
-                code: Some(err)
+                code: Some(err),
             });
         }
 
@@ -400,7 +402,7 @@ impl Process {
             let err = unsafe { errhandlingapi::GetLastError() };
             return Err(LoadError {
                 message: format!("could not take thread snapshot"),
-                code: Some(err)
+                code: Some(err),
             });
         }
 
@@ -417,7 +419,7 @@ impl Process {
                 let err = unsafe { errhandlingapi::GetLastError() };
                 return Err(LoadError {
                     message: format!("could not get thread info"),
-                    code: Some(err)
+                    code: Some(err),
                 });
             }
         };
@@ -429,7 +431,7 @@ impl Process {
             let err = unsafe { errhandlingapi::GetLastError() };
             return Err(LoadError {
                 message: format!("could not open thread, id: {:x}", thread_id),
-                code: Some(err)
+                code: Some(err),
             });
         }
 
@@ -451,7 +453,7 @@ impl Process {
             let err = unsafe { errhandlingapi::GetLastError() };
             return Err(LoadError {
                 message: format!("could not allocate mem, addr: {:x}", addr),
-                code: Some(err)
+                code: Some(err),
             });
         }
 
@@ -470,9 +472,9 @@ impl Process {
 
         if context_result == 0 {
             let err = unsafe { errhandlingapi::GetLastError() };
-            return Err(LoadError { 
+            return Err(LoadError {
                 message: format!("could not get thread context"),
-                code: Some(err) 
+                code: Some(err),
             });
         }
 
@@ -491,9 +493,9 @@ impl Process {
 
         if context_result == 0 {
             let err = unsafe { errhandlingapi::GetLastError() };
-            return Err(LoadError { 
+            return Err(LoadError {
                 message: format!("could not set thread context"),
-                code: Some(err) 
+                code: Some(err),
             });
         }
 
@@ -553,7 +555,7 @@ fn suspend_thread(thread_handle: *mut c_void) -> Result<(), LoadError> {
         let err = unsafe { errhandlingapi::GetLastError() };
         return Err(LoadError {
             message: format!("could not suspend thread"),
-            code: Some(err)
+            code: Some(err),
         });
     }
 
@@ -567,7 +569,7 @@ fn resume_thread(thread_handle: *mut c_void) -> Result<(), LoadError> {
         let err = unsafe { errhandlingapi::GetLastError() };
         return Err(LoadError {
             message: format!("could not resume thread"),
-            code: Some(err)
+            code: Some(err),
         });
     }
 
@@ -589,7 +591,7 @@ fn wait_closed(pid: u32) -> Result<(), LoadError> {
             let err = unsafe { errhandlingapi::GetLastError() };
             return Err(LoadError {
                 message: format!("could not enumerate processes"),
-                code: Some(err)
+                code: Some(err),
             });
         }
 
@@ -612,7 +614,11 @@ fn wait_closed(pid: u32) -> Result<(), LoadError> {
     Ok(())
 }
 
-fn wait_process_created(process_file_name: &[u8]) -> Result<Process, LoadError> {
+fn wait_process_created(process_exe_path: &Path) -> Result<Process, LoadError> {
+    let process_exe_path = process_exe_path
+        .canonicalize()
+        .expect("provided to wait_process_created path can not be canonicalized");
+
     // we can use the fact the EnumProcesses returns items in the same
     // order they were before if nothing changed to just to an arr comparison
     // which is super cheap compared to other methods
@@ -646,7 +652,7 @@ fn wait_process_created(process_file_name: &[u8]) -> Result<Process, LoadError> 
             let err = unsafe { errhandlingapi::GetLastError() };
             return Err(LoadError {
                 message: format!("could not enumerate processes"),
-                code: Some(err)
+                code: Some(err),
             });
         }
 
@@ -663,7 +669,7 @@ fn wait_process_created(process_file_name: &[u8]) -> Result<Process, LoadError> 
                 }
 
                 // if we found the process, then break out of the loop
-                if let Some(handle) = process_is_named(pid, process_file_name) {
+                if let Some(handle) = process_is_named(pid, &process_exe_path) {
                     break 'outer (pid, handle);
                 }
             }
@@ -689,9 +695,13 @@ fn wait_process_created(process_file_name: &[u8]) -> Result<Process, LoadError> 
 }
 
 // returns the handle of the process if it has that name, otherwise it returns None
-fn process_is_named(pid: u32, expected_file_name: &[u8]) -> Option<*mut c_void> {
-    assert!(expected_file_name.len() <= MAX_PROCESS_FILE_NAME_LEN);
-    assert!(expected_file_name.len() > 0);
+fn process_is_named(pid: u32, expected_exe_path: &Path) -> Option<*mut c_void> {
+    // make sure that the path being passed in is canonicalized
+    #[cfg(debug_assertions)]
+    {
+        let cano = expected_exe_path.canonicalize().unwrap();
+        assert_eq!(&cano, expected_exe_path);
+    }
 
     let process_handle = unsafe { processthreadsapi::OpenProcess(REQUIRED_PROCESS_PERMS, 0, pid) };
 
@@ -699,7 +709,7 @@ fn process_is_named(pid: u32, expected_file_name: &[u8]) -> Option<*mut c_void> 
         return None;
     }
 
-    let file_name = unsafe {
+    let exe_path = unsafe {
         let mut name_buf: MaybeUninit<[u8; MAX_PROCESS_FILE_NAME_LEN]> = MaybeUninit::uninit();
         let name_buf_ptr = name_buf.assume_init_mut().as_mut_ptr() as *mut i8;
         let amt_copied = psapi::GetModuleFileNameExA(
@@ -708,10 +718,14 @@ fn process_is_named(pid: u32, expected_file_name: &[u8]) -> Option<*mut c_void> 
             name_buf_ptr,
             MAX_PROCESS_FILE_NAME_LEN as u32,
         ) as usize;
-        &name_buf.assume_init()[0..amt_copied]
+        let exe_path = &name_buf.assume_init()[0..amt_copied];
+
+        // we know its valid utf8 because GetModuleFileNameA
+        let exe_path = std::str::from_utf8(exe_path).unwrap();
+        PathBuf::from(exe_path).canonicalize().unwrap()
     };
 
-    if file_name == expected_file_name {
+    if exe_path == expected_exe_path {
         Some(process_handle)
     } else {
         // not much to do if this fails, just leak if its still open ig

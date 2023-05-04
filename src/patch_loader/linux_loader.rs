@@ -1,6 +1,7 @@
 use std::thread;
 use std::time::Duration;
 use super::LoadError;
+use std::path::Path;
 
 pub struct PatchLoader;
 
@@ -8,7 +9,7 @@ pub struct PatchLoader;
 // but for now must just match windows loader interface to be able to compile
 // for linux targets
 impl PatchLoader {
-    pub fn wait_can_patch(_name: &[u8]) -> Result<PatchLoader, LoadError> {
+    pub fn wait_can_patch(_name: &Path) -> Result<PatchLoader, LoadError> {
         // just loop infinitely
         loop {
             thread::sleep(Duration::from_secs(100));

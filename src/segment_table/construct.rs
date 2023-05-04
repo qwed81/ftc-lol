@@ -94,7 +94,7 @@ pub fn from_combined_dir(mod_dir: &Path) -> Result<Vec<u8>, ()> {
 pub fn from_fantome_file(path: &Path) -> Result<Vec<u8>, ()> {
     // index the full game add all of the files to the files vec
     let mut files: Vec<IndexedFile> = Vec::new();
-    index_files_recur(&PathBuf::from(crate::LOL_PATH), &mut files).unwrap();
+    index_files_recur(&crate::lol_wad_path(), &mut files).unwrap();
     
     // go through the entries and add them to the file
     for i in 0..files.len() {
@@ -289,14 +289,14 @@ fn index_files_recur(path: &Path, files: &mut Vec<IndexedFile>) -> io::Result<()
 
 fn get_equivalent_game_path(mod_path: &Path, mod_root: &Path) -> PathBuf {
     let path_diff = mod_path.strip_prefix(mod_root).unwrap();
-    let mut new_path = PathBuf::from(crate::LOL_WAD_PREFIX);
+    let mut new_path = PathBuf::from(crate::lol_game_folder_path());
     new_path.push(path_diff);
 
     new_path
 }
 
 fn path_to_game_u8(path: &Path) -> Vec<u8> {
-    let path = path.strip_prefix(crate::LOL_WAD_PREFIX).unwrap();
+    let path = path.strip_prefix(crate::lol_game_folder_path()).unwrap();
     let path_u8 = path.as_os_str().to_str().unwrap().as_bytes();
 
     // replace all \ with / (because it needs to match the game's file requests exactly)

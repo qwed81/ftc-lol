@@ -13,8 +13,6 @@ fn get_root_path() -> PathBuf {
 
 #[tokio::main]
 async fn main() {
-    let lol_path = "C:\\Riot Games\\League of Legends\\Game\\League of Legends.exe";
-
     let root = get_root_path();
     let elf_file = File::open(root.join("patch")).unwrap();
     let elf_file = unsafe { MmapOptions::new().map(&elf_file) }.unwrap();
@@ -31,7 +29,7 @@ async fn main() {
     } 
 
     println!("path is: {}", std::str::from_utf8(root_u8_ref).unwrap());
-    let mut loader = PatchLoader::wait_can_patch(lol_path.as_bytes()).unwrap();
+    let mut loader = PatchLoader::wait_can_patch(&skins::lol_game_folder_path()).unwrap();
     loader.freeze_process().unwrap();
 
     loader.load_and_resume(&elf_file, root_u8_ref, &seg_table).unwrap();

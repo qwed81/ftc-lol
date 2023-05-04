@@ -380,8 +380,6 @@ fn take_commands(
     }
 }
 
-const LOL_PATH: &[u8] = b"C:\\Riot Games\\League of Legends\\Game\\League of Legends.exe";
-
 fn add_message(buffer: &Arc<Mutex<VecDeque<String>>>, message: String) {
     let time = Local::now();
     let message = format!("[{}] {}", time.format("%H:%M:%S"), message);
@@ -409,11 +407,11 @@ fn load_patch_loop(
         add_message(
             &buffer,
             format!(
-                "waiting for process: {}",
-                std::str::from_utf8(LOL_PATH).unwrap()
+                "waiting for process: {:?}",
+                skins::lol_exe_path()
             ),
         );
-        let mut loader = match PatchLoader::wait_can_patch(LOL_PATH) {
+        let mut loader = match PatchLoader::wait_can_patch(&skins::lol_exe_path()) {
             Ok(loader) => loader,
             Err(e) => {
                 let m1 = String::from("loader could not wait for process");

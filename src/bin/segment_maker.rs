@@ -49,7 +49,7 @@ fn main() {
         .arg("mkoverlay")
         .arg(&mod_dir)
         .arg(overlay_path.to_str().unwrap())
-        .arg(&format!("--game:{}", skins::LOL_WAD_PREFIX))
+        .arg(&format!("--game:{:?}", skins::lol_game_folder_path()))
         .arg(&mods_str)
         .arg("--noTFT")
         .arg("--ignoreConflict")
