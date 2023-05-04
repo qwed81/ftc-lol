@@ -1,8 +1,8 @@
+use ftc::patch_loader::PatchLoader;
+use ftc::pkg::client::PkgClient;
+use ftc::pkg::{PkgCache, PkgDir};
 use memmap2::MmapOptions;
 use sha2::{Digest, Sha256};
-use skins::patch_loader::PatchLoader;
-use skins::pkg::client::PkgClient;
-use skins::pkg::{PkgCache, PkgDir};
 
 use chrono::Local;
 use std::collections::VecDeque;
@@ -56,7 +56,7 @@ fn import(dir: &PkgDir, cache: &mut PkgCache, path: &Path) -> Result<String, ()>
 
 fn print_help() {
     println!("status - returns message from the server to test connection");
-    println!("import [path] - copies and hashes a seg file to local package list");
+    println!("import [] - copies and hashes a seg file to local package list");
     println!("upload [hash] - uploades a package to the remote package list");
     println!("download [hash] - downloads a package from the server manually");
     println!("set [hash] [active | inactive] - sets a package active/inactive");
@@ -408,10 +408,10 @@ fn load_patch_loop(
             &buffer,
             format!(
                 "waiting for process: {:?}",
-                skins::lol_exe_path()
+                ftc::lol_exe_path()
             ),
         );
-        let mut loader = match PatchLoader::wait_can_patch(&skins::lol_exe_path()) {
+        let mut loader = match PatchLoader::wait_can_patch(&ftc::lol_exe_path()) {
             Ok(loader) => loader,
             Err(e) => {
                 let m1 = String::from("loader could not wait for process");

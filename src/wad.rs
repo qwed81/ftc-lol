@@ -11,7 +11,7 @@ pub struct WadHeader {
     pub signature: u128,
     pub signature_unused: [u8; 240],
     pub checksum: u64,
-    pub entry_count: u32  
+    pub entry_count: u32,
 }
 
 pub const HEADER_LEN: usize = mem::size_of::<WadHeader>();
@@ -30,7 +30,7 @@ pub struct WadEntry {
     pub entry_type_subchunk_count: u8,
     pub is_duplicate: u8,
     pub subchunk_index: u16,
-    pub checksum: u64
+    pub checksum: u64,
 }
 
 impl WadEntry {
@@ -104,26 +104,25 @@ pub fn read_entry<'a>(wad: &'a [u8], index: u32) -> Result<&'a WadEntry, ()> {
 
     // make sure that the entry addr is in bounds of the file
     if offset + mem::size_of::<WadEntry>() > wad.len() {
-        return Err(())
+        return Err(());
     }
 
     // assert no wrapping (saftey of ptr offset)
     assert!((offset + wad.as_ptr() as usize) < isize::MAX as usize);
     let entry = unsafe { &*(wad.as_ptr().offset(offset as isize) as *const WadEntry) };
-    
+
     Ok(entry)
 }
 
 pub fn read_header<'a>(wad: &'a [u8]) -> Result<&'a WadHeader, ()> {
     if wad.len() < mem::size_of::<WadHeader>() {
-        return Err(())
+        return Err(());
     }
     // this is ptr valid because we ensured the length was correct
     let header = unsafe { &*(wad.as_ptr() as *const WadHeader) };
     if &header.magic != &[b'R', b'W'] {
-        return Err(())
+        return Err(());
     }
 
     Ok(header)
 }
-

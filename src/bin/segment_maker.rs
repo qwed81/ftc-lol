@@ -1,4 +1,4 @@
-use skins::segment_table;
+use ftc::segment_table;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -49,7 +49,7 @@ fn main() {
         .arg("mkoverlay")
         .arg(&mod_dir)
         .arg(overlay_path.to_str().unwrap())
-        .arg(&format!("--game:{:?}", skins::lol_game_folder_path()))
+        .arg(&format!("--game:{:?}", ftc::lol_game_folder_path()))
         .arg(&mods_str)
         .arg("--noTFT")
         .arg("--ignoreConflict")

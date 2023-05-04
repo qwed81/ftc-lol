@@ -2,9 +2,9 @@ use std::env;
 use std::path::PathBuf;
 
 pub mod patch_loader;
-pub mod wad;
-pub mod segment_table;
 pub mod pkg;
+pub mod segment_table;
+pub mod wad;
 
 pub fn lol_exe_path() -> PathBuf {
     let mut path = lol_game_folder_path();
@@ -23,4 +23,3 @@ pub fn lol_game_folder_path() -> PathBuf {
     let path = env::var("GAME_FOLDER_PATH").expect("GAME_FOLDER_PATH environment variable required");
     PathBuf::from(&path)
 }
-

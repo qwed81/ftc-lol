@@ -1,10 +1,10 @@
 [package]
-name = "code"
+name = "ftc"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "skins"
+name = "ftc"
 version = "0.1.0"
 edition = "2021"
 
