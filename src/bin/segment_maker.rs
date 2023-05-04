@@ -10,6 +10,8 @@ fn print_help() {
 }
 
 fn main() {
+    dotenvy::from_path("client.env").expect("client.env required");
+
     if env::args().count() < 3 {
         print_help();
         return;
@@ -45,11 +47,15 @@ fn main() {
 
     let overlay_path = PathBuf::from("_temp_files");
     fs::create_dir(&overlay_path).expect("could not create temp directory");
+
+    let game_path = ftc::lol_game_folder_path();
+    let game_path = game_path.to_str().expect("invalid path");
+
     let mut child = Command::new("./mod-tools.exe")
         .arg("mkoverlay")
         .arg(&mod_dir)
         .arg(overlay_path.to_str().unwrap())
-        .arg(&format!("--game:{:?}", ftc::lol_game_folder_path()))
+        .arg(&format!("--game:{}", game_path))
         .arg(&mods_str)
         .arg("--noTFT")
         .arg("--ignoreConflict")
@@ -58,7 +64,7 @@ fn main() {
         .unwrap();
     child.wait().unwrap();
 
-    let table = segment_table::from_combined_dir(&overlay_path).unwrap();
+    let table = segment_table::from_raw_path(&overlay_path).unwrap();
     fs::write(output_name, &table).unwrap();
     fs::remove_dir_all(&overlay_path).unwrap();
 }

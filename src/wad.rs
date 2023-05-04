@@ -43,13 +43,23 @@ impl WadEntry {
     }
 }
 
-pub fn print_entries(wad: &[u8]) {
+pub fn print_wad(wad: &[u8]) {
     let header = read_header(wad).unwrap();
+    let signature = header.signature;
+    let checksum = header.checksum;
+    let entry_count = header.entry_count;
+
+    println!("signature: {}", signature);
+    println!("checksum: {}", checksum);
+    println!("count: {}", entry_count);
+
     for i in 0..header.entry_count {
         let entry = read_entry(wad, i).unwrap();
         let offset = entry.offset;
+        let name = entry.name;
         let len = entry.len;
-        println!("offset: {}, len: {}", offset, len);
+        let checksum = entry.checksum;
+        println!("checksum: {}", checksum);
     }
 }
 
