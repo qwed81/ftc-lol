@@ -722,7 +722,9 @@ fn process_is_named(pid: u32, expected_exe_path: &Path) -> Option<*mut c_void> {
 
         // we know its valid utf8 because GetModuleFileNameA
         let exe_path = std::str::from_utf8(exe_path).unwrap();
-        PathBuf::from(exe_path).canonicalize().unwrap()
+
+        // if it can not be made into a valid path, then just skip it
+        PathBuf::from(exe_path).canonicalize().ok()?
     };
 
     if exe_path == expected_exe_path {
