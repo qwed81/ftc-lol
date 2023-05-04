@@ -43,6 +43,8 @@ impl WadEntry {
     }
 }
 
+// useful for debugging :)
+#[allow(unused)]
 pub fn print_wad(wad: &[u8]) {
     let header = read_header(wad).unwrap();
     let signature = header.signature;

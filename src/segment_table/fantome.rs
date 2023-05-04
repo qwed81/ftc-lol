@@ -7,7 +7,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use xxhash_rust::xxh3::Xxh3;
 
-pub fn from_fantome_wad(path: &Path) -> Result<Vec<u8>, ()> {
+pub fn from_fantome_wad_list(paths: &Vec<PathBuf>) -> Result<Vec<u8>, ()> {
     // index the full game add all of the files to the files vec
     let mut files: Vec<IndexedFile> = Vec::new();
     index_files_recur(&crate::lol_wad_path(), &mut files).unwrap();
@@ -30,18 +30,26 @@ pub fn from_fantome_wad(path: &Path) -> Result<Vec<u8>, ()> {
         }
     }
 
-    let file_name = path.file_name().ok_or(())?;
-    let file_name = file_name.to_str().unwrap();
+    let mut wads: Vec<Mmap> = Vec::new();
+    for path in paths {
+        let wad = File::open(&path).unwrap();
+        let wad = unsafe { MmapOptions::new().map(&wad) }.unwrap();
+        wads.push(wad);
+    }
 
-    let wad = File::open(&path).unwrap();
-    let wad = unsafe { MmapOptions::new().map(&wad) }.unwrap();
-    let header = wad::read_header(&wad).unwrap();
+    for i in 0..wads.len() {
+        let file_name = paths[i].file_name().ok_or(())?;
+        let file_name = file_name.to_str().unwrap();
 
-    // merge all of the entries in the file with the entries in the wad file
-    for file in &mut files {
-        for i in 0..header.entry_count {
-            let entry = wad::read_entry(&wad, i).unwrap();
-            replace_entry(file, file_name, &wad, entry);
+        let wad = &wads[i];
+        let header = wad::read_header(&wad).unwrap();
+
+        // merge all of the entries in the file with the entries in the wad file
+        for file in &mut files {
+            for i in 0..header.entry_count {
+                let entry = wad::read_entry(&wad, i).unwrap();
+                replace_entry(file, file_name, &wad, entry);
+            }
         }
     }
 

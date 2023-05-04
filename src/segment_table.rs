@@ -49,7 +49,7 @@ mod fantome;
 mod raw;
 mod reconstruct;
 
-pub use fantome::from_fantome_wad;
+pub use fantome::from_fantome_wad_list;
 pub use raw::from_raw_path;
 
 #[derive(Clone)]
@@ -185,7 +185,8 @@ fn path_to_game_u8(path: &Path) -> Vec<u8> {
         .collect()
 }
 
-// temporary for testing
+// useful for debugging :)
+#[allow(unused)]
 fn print_file_replace(replace: &FileReplace) {
     println!("{}: ", std::str::from_utf8(&replace.name).unwrap());
     let mut total_len = 0;
