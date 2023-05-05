@@ -7,10 +7,17 @@ use std::io;
 use std::path::{Path, PathBuf};
 use xxhash_rust::xxh3::Xxh3;
 
-pub fn from_fantome_wad_list(paths: &Vec<PathBuf>) -> Result<Vec<u8>, ()> {
+#[derive(Debug)]
+pub enum MergeError {
+    Indexing(io::Error),
+    Wad,
+    Merging(io::Error),
+}
+
+pub fn from_fantome_wad_list(paths: &Vec<PathBuf>) -> Result<Vec<u8>, MergeError> {
     // index the full game add all of the files to the files vec
     let mut files: Vec<IndexedFile> = Vec::new();
-    index_files_recur(&crate::lol_wad_path(), &mut files).unwrap();
+    index_files_recur(&crate::lol_wad_path(), &mut files).map_err(|e| MergeError::Indexing(e))?;
 
     // go through the entries and add them to the file
     for i in 0..files.len() {
@@ -32,17 +39,17 @@ pub fn from_fantome_wad_list(paths: &Vec<PathBuf>) -> Result<Vec<u8>, ()> {
 
     let mut wads: Vec<Mmap> = Vec::new();
     for path in paths {
-        let wad = File::open(&path).unwrap();
-        let wad = unsafe { MmapOptions::new().map(&wad) }.unwrap();
+        let wad = File::open(&path).map_err(|e| MergeError::Merging(e))?;
+        let wad = unsafe { MmapOptions::new().map(&wad) }.expect("could not mmap file");
         wads.push(wad);
     }
 
     for i in 0..wads.len() {
-        let file_name = paths[i].file_name().ok_or(())?;
+        let file_name = paths[i].file_name().ok_or(MergeError::Wad)?;
         let file_name = file_name.to_str().unwrap();
 
         let wad = &wads[i];
-        let header = wad::read_header(&wad).unwrap();
+        let header = wad::read_header(&wad).map_err(|_| MergeError::Wad)?;
 
         // merge all of the entries in the file with the entries in the wad file
         for file in &mut files {
@@ -73,6 +80,7 @@ pub fn from_fantome_wad_list(paths: &Vec<PathBuf>) -> Result<Vec<u8>, ()> {
 
         let entries = entries.iter().map(|&(_, entry)| entry);
 
+        // the header should be valid if it made it to this point
         let mut header = wad::read_header(&file.data).unwrap().clone();
         let mut hasher = Xxh3::new();
         hasher.update(&wad::slice_header(&file.data)[0..4]);
@@ -121,7 +129,9 @@ pub fn from_fantome_wad_list(paths: &Vec<PathBuf>) -> Result<Vec<u8>, ()> {
                         data_off: off,
                     });
 
-                    let entry = wad::read_entry(&file.data, entry_index).unwrap();
+                    let entry =
+                        wad::read_entry(&file.data, entry_index).map_err(|_| MergeError::Wad)?;
+
                     let mut new_entry = entry.clone();
                     new_entry.offset = virtual_offset;
                     entry_table_bytes.extend(wad::entry_as_bytes(&new_entry));

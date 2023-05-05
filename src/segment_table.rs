@@ -73,8 +73,6 @@ fn flatten_file_replace(files: Vec<FileReplace>) -> Vec<u8> {
 
     // write out the file header
     for file in &files {
-        print_file_replace(file);
-
         file_header_offsets.push(buf.len());
 
         push_u32(&mut buf, file.name.len() as u32);
