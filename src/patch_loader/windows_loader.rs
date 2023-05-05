@@ -130,9 +130,17 @@ impl PatchLoader {
 
         // this is tricky because it has to be within a 32 bit pointer of kernel32, because
         // it can then utilize 32bit relative jumps
-        let mut load_addr = kernel32_handle as ExPtr & 0xFFFFFFFF_80000000;
+        let mut load_addr =
+            ((kernel32_handle as ExPtr - i32::MAX as ExPtr) & 0xFFFF_FFFF_FFFF_0000) + 0x100_0000;
+
         while let Err(_) = self.proc.reserve_mem(load_addr, elf_len as ExLen) {
-            load_addr += 0x1000000;
+            if load_addr + elf_len as ExPtr >= kernel32_handle as ExPtr + i32::MAX as ExPtr {
+                return Err(LoadError {
+                    message: String::from("no room to allocate elf"),
+                    code: None,
+                });
+            }
+            load_addr += 0x10_0000;
         }
 
         // load elf sections
