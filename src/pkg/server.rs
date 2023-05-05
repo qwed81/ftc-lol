@@ -1,6 +1,8 @@
+use super::ConnectionStatus;
 use super::{ActivePkg, PkgCache, PkgDir};
 use axum::body::StreamBody;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
+use axum::http::HeaderMap;
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Json};
 use axum::routing::{get, post};
@@ -18,11 +20,26 @@ struct PkgState {
     active_pkg_hash: RwLock<Option<String>>,
 }
 
-async fn upload(State(state): State<Arc<PkgState>>, mut file: Multipart) -> impl IntoResponse {
-    let mut file = match file.next_field().await {
+async fn upload(
+    headers: HeaderMap,
+    State(state): State<Arc<PkgState>>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    let Some(name) = headers.get(super::NAME_HEADER) else {
+        return Err((StatusCode::BAD_REQUEST, String::from("required name header")));
+    };
+
+    let Some(patch)= headers.get(super::PATCH_HEADER) else {
+        return Err((StatusCode::BAD_REQUEST, String::from("required patch header")));
+    };
+
+    println!("name: {}", name.to_str().unwrap());
+    println!("patch: {}", patch.to_str().unwrap());
+
+    let mut file = match multipart.next_field().await {
         Ok(field) => match field {
             Some(field) => field,
-            None => return Err((StatusCode::BAD_REQUEST, String::from("No file provided"))),
+            None => return Err((StatusCode::BAD_REQUEST, String::from("no file provided"))),
         },
         Err(e) => return Err((e.status(), e.body_text())),
     };
@@ -50,20 +67,20 @@ async fn upload(State(state): State<Arc<PkgState>>, mut file: Multipart) -> impl
 
     // if we already have the file, no need to add it
     if state.cache.read().unwrap().contains(&hash_string) {
-        return Ok(());
+        return Ok(StatusCode::OK);
     }
 
     let path = state
         .dir
         .get_pkg_path(&hash_string)
-        .expect("Hash did not produce valid path");
+        .expect("hash did not produce valid path");
 
     let mut file = match File::create(path).await {
         Ok(file) => file,
         Err(_) => {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                String::from("Could not create file"),
+                String::from("could not create file"),
             ))
         }
     };
@@ -71,13 +88,13 @@ async fn upload(State(state): State<Arc<PkgState>>, mut file: Multipart) -> impl
     if let Err(_) = file.write_all(&buffer).await {
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            String::from("Could not create file"),
+            String::from("could not create file"),
         ));
     }
 
     // add it to the cache once it is done
     state.cache.write().unwrap().add(hash_string);
-    Ok(())
+    Ok(StatusCode::OK)
 }
 
 async fn download(
@@ -106,13 +123,15 @@ async fn download(
             header::CONTENT_DISPOSITION,
             format!("attachment; filename=\"{}\"", hash),
         ),
+        (super::NAME_HEADER, String::from("my_name")),
+        (super::PATCH_HEADER, String::from("13.7")),
     ];
 
     Ok((headers, body))
 }
 
 async fn status_check() -> impl IntoResponse {
-    "OK"
+    Json(ConnectionStatus::Connected)
 }
 
 async fn get_active(State(state): State<Arc<PkgState>>) -> impl IntoResponse {
@@ -141,10 +160,11 @@ async fn activate(
     Path(hash): Path<String>,
 ) -> impl IntoResponse {
     if state.cache.read().unwrap().contains(&hash) == false {
-        return Err((StatusCode::BAD_REQUEST, "Package does not exist"));
+        return Err((StatusCode::BAD_REQUEST, "package does not exist"));
     }
     *state.active_pkg_hash.write().unwrap() = Some(hash);
-    Ok(())
+
+    Ok(StatusCode::OK)
 }
 
 async fn deactivate(
@@ -152,7 +172,7 @@ async fn deactivate(
     Path(hash): Path<String>,
 ) -> impl IntoResponse {
     if state.cache.read().unwrap().contains(&hash) == false {
-        return Err((StatusCode::BAD_REQUEST, "Package does not exist"));
+        return Err((StatusCode::BAD_REQUEST, "package does not exist"));
     }
 
     // deactivate the package if it is the active one
@@ -161,10 +181,10 @@ async fn deactivate(
         Some(active_hash) if active_hash == &hash => {
             *hash_ref = None;
         }
-        _ => return Err((StatusCode::CONFLICT, "Package not active")),
+        _ => return Err((StatusCode::CONFLICT, "package not active")),
     }
 
-    Ok(())
+    Ok(StatusCode::OK)
 }
 
 pub async fn listen(dir: PkgDir, cache: PkgCache, port: u16) {

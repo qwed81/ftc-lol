@@ -1,4 +1,6 @@
-use super::{ActivePkg, PkgCache, PkgDir};
+use super::{ActivePkg, ConnectionStatus, PkgCache, PkgDir};
+use reqwest::header::HeaderMap;
+use reqwest::header::HeaderValue;
 use reqwest::{
     blocking::{
         multipart::{Form, Part},
@@ -39,7 +41,11 @@ impl PkgClient {
         let Ok(part) = part.file_name(hash).mime_str("application/octet-stream") else { return Err(()) };
 
         let form = Form::new().part("upload", part);
-        let Ok(res) = self.client.post(route).multipart(form).send() else {
+        let mut headers = HeaderMap::new();
+        headers.insert(super::NAME_HEADER, HeaderValue::from_static("client_name"));
+        headers.insert(super::PATCH_HEADER, HeaderValue::from_static("13.8"));
+
+        let Ok(res) = self.client.post(route).headers(headers).multipart(form).send() else {
             return Err(());
         };
 
@@ -88,10 +94,10 @@ impl PkgClient {
         return Ok(());
     }
 
-    pub fn get_status(&self) -> Result<String, ()> {
+    pub fn get_status(&self) -> Result<ConnectionStatus, ()> {
         let route = format!("http://{}:{}/status", self.ip, self.port);
         let res = self.client.get(route).send().map_err(|_| ())?;
-        let text = res.text().map_err(|_| ())?;
+        let text = res.json::<ConnectionStatus>().map_err(|_| ())?;
         Ok(text)
     }
 

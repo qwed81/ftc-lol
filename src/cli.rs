@@ -1,3 +1,4 @@
+use crate::pkg::ConnectionStatus;
 use crate::pkg::{client::PkgClient, PkgCache, PkgDir};
 use crate::segment_table;
 use memmap2::MmapOptions;
@@ -208,9 +209,15 @@ where
     I: Iterator<Item = A>,
     A: AsRef<str>,
 {
+    let mut count = 0;
     for hash in hashes {
         let hash = hash.as_ref();
-        println!("{}", hash);
+        println!("{}", &hash[0..10]);
+        count += 1;
+    }
+
+    if count == 0 {
+        println!("there are packages");
     }
 }
 
@@ -220,7 +227,9 @@ pub fn print_status(client: &PkgClient) {
     let time_taken = (Instant::now() - start).as_millis();
 
     match status_result {
-        Ok(status) => println!("status: {}, delay: {}ms", status, time_taken),
+        Ok(status) => match status {
+            ConnectionStatus::Connected => println!("status: OK, delay: {}ms", time_taken),
+        },
         Err(_) => println!("the server could not be reached"),
     }
 }
