@@ -195,9 +195,16 @@ fn take_commands(
             "exit" => {
                 // make sure that everything is done loading before exiting
                 // so we don't end up in a state without a proper download
-                let _ = cache.write();
-
-                std::process::exit(0);
+                // once everything is done then we can write it out to a file
+                // before exiting
+                let ok = match cache.write().unwrap().flush_blocking() {
+                    Ok(_) => 0,
+                    Err(_) => {
+                        println!("could not write package metadata");
+                        -1
+                    }
+                };
+                std::process::exit(ok);
             }
             "clog" => {
                 let mut buffer = buffer.lock().unwrap();

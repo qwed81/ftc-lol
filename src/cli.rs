@@ -194,6 +194,10 @@ pub fn download(client: &PkgClient, cache: &mut PkgCache, hash: &str) {
     if let Err(_) = client.download(cache, String::from(hash)) {
         println!("download failed");
     }
+
+    if let Err(_) = cache.flush_blocking() {
+        println!("could not save package metadata");
+    }
 }
 
 pub fn remove(dir: &PkgDir, cache: &mut PkgCache, hash: &str) {
@@ -209,6 +213,9 @@ pub fn remove(dir: &PkgDir, cache: &mut PkgCache, hash: &str) {
     }
 
     cache.remove(&hash);
+    if let Err(_) = cache.flush_blocking() {
+        println!("could not remove package meta");
+    }
 }
 
 pub fn set(client: &PkgClient, hash: &str, active_text: &str) {

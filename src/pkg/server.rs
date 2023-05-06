@@ -122,14 +122,22 @@ async fn download(
     State(state): State<Arc<PkgState>>,
     Path(hash): Path<String>,
 ) -> impl IntoResponse {
+    let (name, patch) = {
+        let cache = state.cache.read().unwrap();
+        let Some(meta) = cache.get(&hash) else {
+            return Err((StatusCode::NOT_FOUND, "do not have the requested package"));
+        };
+        (meta.name.clone(), meta.patch.clone())
+    };
+
     let path = match state.dir.get_pkg_path(&hash) {
         Some(path) => path,
-        None => return Err((StatusCode::BAD_REQUEST, "Invalid hash provided")),
+        None => return Err((StatusCode::BAD_REQUEST, "invalid hash provided")),
     };
 
     let file = match File::open(path).await {
         Ok(file) => file,
-        Err(_) => return Err((StatusCode::NOT_FOUND, "Could not open requested package")),
+        Err(_) => return Err((StatusCode::NOT_FOUND, "could not open requested package")),
     };
 
     let stream = ReaderStream::new(file);
@@ -144,8 +152,8 @@ async fn download(
             header::CONTENT_DISPOSITION,
             format!("attachment; filename=\"{}\"", hash),
         ),
-        (super::NAME_HEADER, String::from("my_name")),
-        (super::PATCH_HEADER, String::from("13.7")),
+        (super::NAME_HEADER, name),
+        (super::PATCH_HEADER, patch),
     ];
 
     Ok((headers, body))
