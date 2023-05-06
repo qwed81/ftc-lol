@@ -266,11 +266,14 @@ static SegmentReplaceEntry* lookup_segment_replace(FileReplaceHeader* header, ui
         SegmentReplaceEntry* entry = &start[i];
         if (entry->start == file_off) {
             if (entry->len != len) {
-                log_str(log_handle, "\nsame interval start with different lengths. file: ");
+                log_str(log_handle, "\nincorrect length requested file: ");
                 log_str(log_handle, header->name_start);
                 log_str(log_handle, " entry index: ");
                 log_int(log_handle, i);
-                return NULL;
+                log_str(log_handle, " requested: ");
+                log_int(log_handle, len);
+                log_str(log_handle, " have: ");
+                log_int(log_handle, entry->len);
             }
             return entry;
         }
@@ -289,13 +292,10 @@ static uint32_t my_ReadFile(void* handle, void* buffer, uint32_t bytes_to_read, 
 
     // Windows doesn't have GetFilePointer for some reason, but this works
     uint32_t file_off = SetFilePointer(handle, 0, NULL, FILE_CURRENT);
-    /*
-    log_str(log_handle, "\nReading from mapped file, file pointer: ");
-    log_int(log_handle, file_off);
-    */
+
     SegmentReplaceEntry* seg = lookup_segment_replace(header, file_off, bytes_to_read);
     if (seg == NULL) {
-        log_str(log_handle, "\ncould not find interval of mapped file: ");
+        log_str(log_handle, "\ncould not get interval of mapped file: ");
         log_str(log_handle, header->name_start);
         return post_hook_ReadFile(handle, buffer, bytes_to_read, bytes_read, lp_overlapped);
     }
