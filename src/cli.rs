@@ -1,4 +1,5 @@
 use crate::pkg::ConnectionStatus;
+use crate::pkg::PkgMeta;
 use crate::pkg::{client::PkgClient, PkgCache, PkgDir};
 use crate::segment_table;
 use memmap2::MmapOptions;
@@ -10,7 +11,16 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-pub fn import(dir: &PkgDir, cache: &mut PkgCache, path: &Path) {
+const HASH_DISPLAY_LEN: usize = 10;
+pub fn fmt_pkg_parts(hash: &str, name: &str, patch: &str) -> String {
+    format!("{} ({}:{})", &hash[0..HASH_DISPLAY_LEN], name, patch)
+}
+
+pub fn fmt_pkg(meta: &PkgMeta) -> String {
+    fmt_pkg_parts(&meta.hash, &meta.name, &meta.patch)
+}
+
+pub fn import(dir: &PkgDir, cache: &mut PkgCache, pkg_name: String, path: &Path) {
     let Ok(mut file) = File::open(path) else {
         println!("could not open {:?}", path);
         println!("import failed");
@@ -36,8 +46,20 @@ pub fn import(dir: &PkgDir, cache: &mut PkgCache, path: &Path) {
         return;
     }
 
-    println!("import succeeded, as hash: {}", &hash_string);
-    cache.add(hash_string);
+    println!(
+        "import succeeded as {}",
+        fmt_pkg_parts(&hash_string, &pkg_name, &crate::get_current_patch())
+    );
+
+    cache.add(PkgMeta {
+        hash: hash_string,
+        name: pkg_name,
+        patch: crate::get_current_patch(),
+    });
+
+    if let Err(_) = cache.flush_blocking() {
+        println!("could not save package metadata");
+    }
 }
 
 fn recursive_add_dir(path: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
@@ -54,7 +76,7 @@ fn recursive_add_dir(path: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
     Ok(())
 }
 
-pub fn merge(dir: &PkgDir, cache: &mut PkgCache, paths: Vec<&str>) {
+pub fn merge(dir: &PkgDir, cache: &mut PkgCache, pkg_name: String, paths: Vec<&str>) {
     let mod_path = env::var("MOD_PATH").expect("MOD_PATH environment variable required");
 
     // we need to append all paths to the mod_path
@@ -84,7 +106,7 @@ pub fn merge(dir: &PkgDir, cache: &mut PkgCache, paths: Vec<&str>) {
     hasher.update(&seg_table);
     let hash_string = format!("{:x}", hasher.finalize());
 
-    if cache.contains(&hash_string) {
+    if cache.contains_hash(&hash_string) {
         println!("package is already downloaded");
         println!("package hash is {}", &hash_string);
         return;
@@ -98,8 +120,20 @@ pub fn merge(dir: &PkgDir, cache: &mut PkgCache, paths: Vec<&str>) {
         return;
     }
 
-    println!("merge successful, hash is {}", &hash_string);
-    cache.add(hash_string);
+    println!(
+        "merge succeeded as {}",
+        fmt_pkg_parts(&hash_string, &pkg_name, &crate::get_current_patch())
+    );
+
+    cache.add(PkgMeta {
+        hash: hash_string,
+        name: pkg_name,
+        patch: crate::get_current_patch(),
+    });
+
+    if let Err(_) = cache.flush_blocking() {
+        println!("could not save package metadata");
+    }
 }
 
 enum PrefixedHash {
@@ -108,15 +142,14 @@ enum PrefixedHash {
     NotAny,
 }
 
-fn get_prefixed_hash<I, A>(hash: &str, iter: I, list_name: &str) -> PrefixedHash
+fn get_prefixed_hash<'a, I>(hash: &str, iter: I, list_name: &str) -> PrefixedHash
 where
-    I: Iterator<Item = A>,
-    A: AsRef<str>,
+    I: Iterator<Item = &'a PkgMeta> + 'a,
 {
     let mut count = 0;
     let mut selected = None;
     for h in iter {
-        let h = h.as_ref();
+        let h = &h.hash;
         if h.starts_with(hash) {
             selected = Some(String::from(h));
             count += 1;
@@ -137,12 +170,12 @@ where
 }
 
 pub fn upload(client: &PkgClient, cache: &PkgCache, hash: &str) {
-    let PrefixedHash::Valid(hash) = get_prefixed_hash(&hash, cache.hashes(), "local packages") else {
+    let PrefixedHash::Valid(hash) = get_prefixed_hash(&hash, cache.iter(), "local packages") else {
         println!("could not upload");
         return;
     };
 
-    if let Err(_) = client.upload(String::from(hash)) {
+    if let Err(_) = client.upload(cache, String::from(hash)) {
         println!("upload failed");
     }
 }
@@ -164,7 +197,7 @@ pub fn download(client: &PkgClient, cache: &mut PkgCache, hash: &str) {
 }
 
 pub fn remove(dir: &PkgDir, cache: &mut PkgCache, hash: &str) {
-    let PrefixedHash::Valid(hash) = get_prefixed_hash(&hash, cache.hashes(), "local packages") else {
+    let PrefixedHash::Valid(hash) = get_prefixed_hash(&hash, cache.iter(), "local packages") else {
         println!("could not remove");
         return;
     };
@@ -204,20 +237,18 @@ pub fn set(client: &PkgClient, hash: &str, active_text: &str) {
     }
 }
 
-pub fn print_hash_list<I, A>(hashes: I)
+pub fn print_meta_list<'a, I>(items: I)
 where
-    I: Iterator<Item = A>,
-    A: AsRef<str>,
+    I: Iterator<Item = &'a PkgMeta> + 'a,
 {
     let mut count = 0;
-    for hash in hashes {
-        let hash = hash.as_ref();
-        println!("{}", &hash[0..10]);
+    for meta in items {
+        println!("{}", fmt_pkg_parts(&meta.hash, &meta.name, &meta.patch));
         count += 1;
     }
 
     if count == 0 {
-        println!("there are packages");
+        println!("there are no packages");
     }
 }
 

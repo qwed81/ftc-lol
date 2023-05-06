@@ -1,4 +1,5 @@
 use super::LoadError;
+use std::path::Path;
 use std::thread;
 use std::time::Duration;
 

@@ -1,6 +1,6 @@
 use axum::http::HeaderName;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::fs;
 use std::io;
 use std::path::PathBuf;
 
@@ -10,10 +10,6 @@ pub mod server;
 const NAME_HEADER: HeaderName = HeaderName::from_static("x-pkg-name");
 const PATCH_HEADER: HeaderName = HeaderName::from_static("x-pkg-patch");
 
-#[derive(Deserialize, Serialize)]
-pub struct ActivePkg {
-    hash: Option<String>,
-}
 #[derive(Clone)]
 pub struct PkgDir {
     root: PathBuf,
@@ -47,32 +43,39 @@ impl PkgDir {
     }
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct PkgMeta {
-    hash: String,
-    name: String,
-    patch: String,
+    pub hash: String,
+    pub name: String,
+    pub patch: String,
 }
 
 pub struct PkgCache {
     data: Vec<PkgMeta>,
+    dir: PkgDir,
 }
 
 impl PkgCache {
-    pub fn from_dir_sync(dir: &PkgDir) -> io::Result<PkgCache> {
-        let data = std::fs::read(&dir.get_meta_path())?;
-        let data: Vec<PkgMeta> = serde_json::from_slice(&data).expect("data is corrupted");
+    pub fn from_dir_blocking(dir: PkgDir) -> io::Result<PkgCache> {
+        let meta_path = dir.get_meta_path();
 
-        /*
-        let dir = std::fs::read_dir(&dir.root)?;
-        let mut hashes = HashSet::new();
-        for file in dir {
-            let pkg_entry = file?;
-            hashes.insert(String::from(pkg_entry.file_name().to_str().unwrap()));
+        match fs::read(&meta_path) {
+            Ok(data) => {
+                let meta = serde_json::from_slice(&data).expect("data is corrupted");
+                return Ok(PkgCache { dir, data: meta });
+            }
+            Err(e) => {
+                // if it errored because the file does not exist, just create it
+                if let io::ErrorKind::NotFound = e.kind() {
+                    let meta: Vec<PkgMeta> = Vec::new();
+                    let data = serde_json::to_vec(&meta).expect("could not serialize");
+                    fs::write(&meta_path, data)?;
+                    return Ok(PkgCache { dir, data: meta });
+                } else {
+                    return Err(e);
+                }
+            }
         }
-        */
-
-        Ok(PkgCache { data })
     }
 
     pub fn remove(&mut self, hash: &str) {
@@ -84,19 +87,30 @@ impl PkgCache {
         }
     }
 
-    pub fn contains(&self, hash: &str) -> bool {
+    pub fn contains_hash(&self, hash: &str) -> bool {
         self.data.iter().filter(|x| &x.hash == hash).count() != 0
     }
 
-    pub fn add(&mut self, hash: String, name: String, patch: String) {
-        self.data.push(PkgMeta { hash, name, patch });
+    pub fn get<'a>(&'a self, hash: &str) -> Option<&'a PkgMeta> {
+        self.data.iter().filter(|x| &x.hash == hash).next()
+    }
+
+    pub fn hashes(&self) -> impl Iterator<Item = &String> {
+        self.data.iter().map(|x| &x.hash)
+    }
+
+    pub fn add(&mut self, pkg: PkgMeta) {
+        self.data.push(pkg);
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &PkgMeta> {
         self.data.iter()
     }
 
-    pub async fn flush() {}
-
-    pub fn flush_sync() {}
+    pub fn flush_blocking(&self) -> io::Result<()> {
+        let path = self.dir.get_meta_path();
+        let items: Vec<&PkgMeta> = self.iter().collect();
+        let data = serde_json::to_vec(&items).expect("meta could not be serialized");
+        fs::write(&path, data)
+    }
 }

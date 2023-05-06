@@ -25,3 +25,7 @@ pub fn lol_game_folder_path() -> PathBuf {
         env::var("GAME_FOLDER_PATH").expect("GAME_FOLDER_PATH environment variable required");
     PathBuf::from(&path)
 }
+
+pub fn get_current_patch() -> String {
+    String::from("13.1")
+}

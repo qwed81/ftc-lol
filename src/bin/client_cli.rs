@@ -18,7 +18,7 @@ use std::time::Duration;
 
 fn print_help() {
     println!("status - returns message from the server to test connection");
-    println!("import [path] - copies and hashes a seg file to local package list");
+    println!("import [name] [path] - copies and hashes a seg file to local package list");
     println!("merge [new name] [mod1] [mod2]... - makes a new package from fantome files");
     println!("upload [hash] - uploades a package to the remote package list");
     println!("download [hash] - downloads a package from the server manually");
@@ -44,7 +44,7 @@ fn main() {
 
     let dir = PkgDir::new(PathBuf::from(pkg_path));
     let client = PkgClient::new(dir.clone(), &addr);
-    let cache = PkgCache::from_dir_sync(&dir).unwrap();
+    let cache = PkgCache::from_dir_blocking(dir.clone()).unwrap();
 
     let dir_ref = Arc::new(dir);
     let client_ref = Arc::new(client);
@@ -103,22 +103,37 @@ fn take_commands(
             "status" => cli::print_status(&client),
             "import" => {
                 if cmd.len() < 2 {
-                    println!("import requires a path");
+                    println!("import requires a path and name");
+                    continue;
+                }
+
+                if cmd.len() < 3 {
+                    println!("import requires a name");
                     continue;
                 }
 
                 let mut cache = cache.write().unwrap();
-                cli::import(&dir, &mut cache, &PathBuf::from(&cmd[1]));
+                cli::import(
+                    &dir,
+                    &mut cache,
+                    String::from(cmd[1]),
+                    &PathBuf::from(&cmd[2]),
+                );
             }
             "merge" => {
                 if cmd.len() < 2 {
+                    println!("merge requires a name");
+                    continue;
+                }
+
+                if cmd.len() < 3 {
                     println!("merge requires at least one mod");
                     continue;
                 }
 
-                let paths: Vec<&str> = Vec::from(&cmd[1..]);
+                let paths: Vec<&str> = Vec::from(&cmd[2..]);
                 let mut cache = cache.write().unwrap();
-                cli::merge(&dir, &mut cache, paths);
+                cli::merge(&dir, &mut cache, String::from(cmd[1]), paths);
             }
             "upload" => {
                 if cmd.len() < 2 {
@@ -148,14 +163,14 @@ fn take_commands(
             }
             "local" => {
                 let cache = cache.read().unwrap();
-                cli::print_hash_list(cache.hashes());
+                cli::print_meta_list(cache.iter());
             }
             "remote" => {
                 let Ok(hashes) = client.list() else {
                     println!("could not get remote package list");
                     continue;
                 };
-                cli::print_hash_list(hashes.iter());
+                cli::print_meta_list(hashes.iter());
             }
             "active" => {
                 let Ok(active) = client.get_active() else {
@@ -164,7 +179,7 @@ fn take_commands(
                 };
 
                 match active {
-                    Some(active) => println!("{}", active),
+                    Some(active) => println!("{}", cli::fmt_pkg(&active)),
                     None => println!("there is no package active"),
                 }
             }
@@ -286,13 +301,13 @@ fn load_patch_loop(
         // download the package if it does not exist locally
         {
             let mut cache = cache.write().unwrap();
-            if cache.contains(&active) == false {
-                let m1 = format!("do not have {}", &active);
-                let m2 = format!("downloading {}", &active);
+            if cache.contains_hash(&active.hash) == false {
+                let m1 = format!("do not have {}", cli::fmt_pkg(&active));
+                let m2 = format!("downloading {}", cli::fmt_pkg(&active));
                 add_message(&buffer, m1);
                 add_message(&buffer, m2);
 
-                if let Err(_) = client.download(&mut cache, active.clone()) {
+                if let Err(_) = client.download(&mut cache, active.hash.clone()) {
                     add_message(
                         &buffer,
                         String::from("package download failed, loading game without patch"),
@@ -308,7 +323,7 @@ fn load_patch_loop(
             }
         }
 
-        let seg_table_path = dir.get_pkg_path(&active).unwrap();
+        let seg_table_path = dir.get_pkg_path(&active.hash).unwrap();
         let mut retry_count = 0;
         let seg_table_file = loop {
             match File::open(&seg_table_path) {

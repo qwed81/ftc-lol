@@ -1,5 +1,5 @@
 use super::ConnectionStatus;
-use super::{ActivePkg, PkgCache, PkgDir};
+use super::{PkgCache, PkgDir, PkgMeta};
 use axum::body::StreamBody;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::http::HeaderMap;
@@ -12,6 +12,7 @@ use std::net::{SocketAddr, SocketAddrV4};
 use std::sync::{Arc, RwLock};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
+use tokio::task;
 use tokio_util::io::ReaderStream;
 
 struct PkgState {
@@ -24,18 +25,24 @@ async fn upload(
     headers: HeaderMap,
     State(state): State<Arc<PkgState>>,
     mut multipart: Multipart,
-) -> impl IntoResponse {
-    let Some(name) = headers.get(super::NAME_HEADER) else {
+) -> Result<StatusCode, (StatusCode, String)> {
+    // validate package name header
+    let Some(pkg_name) = headers.get(super::NAME_HEADER) else {
         return Err((StatusCode::BAD_REQUEST, String::from("required name header")));
     };
-
-    let Some(patch)= headers.get(super::PATCH_HEADER) else {
-        return Err((StatusCode::BAD_REQUEST, String::from("required patch header")));
+    let Ok(pkg_name) = pkg_name.to_str() else {
+        return Err((StatusCode::BAD_REQUEST, String::from("name required to be ascii")));
     };
 
-    println!("name: {}", name.to_str().unwrap());
-    println!("patch: {}", patch.to_str().unwrap());
+    // validate pachage patch header
+    let Some(pkg_patch)= headers.get(super::PATCH_HEADER) else {
+        return Err((StatusCode::BAD_REQUEST, String::from("required patch header")));
+    };
+    let Ok(pkg_patch)= pkg_patch.to_str() else {
+        return Err((StatusCode::BAD_REQUEST, String::from("patch required to be ascii")));
+    };
 
+    // read the file
     let mut file = match multipart.next_field().await {
         Ok(field) => match field {
             Some(field) => field,
@@ -66,7 +73,7 @@ async fn upload(
     let hash_string = format!("{:x}", hasher.finalize());
 
     // if we already have the file, no need to add it
-    if state.cache.read().unwrap().contains(&hash_string) {
+    if state.cache.read().unwrap().contains_hash(&hash_string) {
         return Ok(StatusCode::OK);
     }
 
@@ -92,8 +99,22 @@ async fn upload(
         ));
     }
 
-    // add it to the cache once it is done
-    state.cache.write().unwrap().add(hash_string);
+    // add the requested package into the metadata
+    state.cache.write().unwrap().add(PkgMeta {
+        hash: hash_string,
+        name: String::from(pkg_name),
+        patch: String::from(pkg_patch),
+    });
+
+    // flush the cache to disk now that it changed
+    task::spawn_blocking(move || {
+        if let Err(_) = state.cache.read().unwrap().flush_blocking() {
+            println!("could not flush pacakage metadata");
+        }
+    })
+    .await
+    .unwrap();
+
     Ok(StatusCode::OK)
 }
 
@@ -134,32 +155,28 @@ async fn status_check() -> impl IntoResponse {
     Json(ConnectionStatus::Connected)
 }
 
-async fn get_active(State(state): State<Arc<PkgState>>) -> impl IntoResponse {
-    let active = match state.active_pkg_hash.read().unwrap().as_deref() {
-        Some(hash) => Some(hash.to_owned()),
-        None => None,
+async fn get_active(State(state): State<Arc<PkgState>>) -> Json<Option<PkgMeta>> {
+    let active_hash_lock = state.active_pkg_hash.read().unwrap();
+    let Some(active_hash) = &*active_hash_lock else {
+        return Json(None);
     };
 
-    Json(ActivePkg { hash: active })
+    Json(state.cache.read().unwrap().get(&active_hash).cloned())
 }
 
 async fn list(State(state): State<Arc<PkgState>>) -> impl IntoResponse {
-    let hashes: Vec<String> = state
-        .cache
-        .read()
-        .unwrap()
-        .hashes()
-        .map(|hash| String::from(hash))
-        .collect();
+    let cache = state.cache.read().unwrap();
+    let meta: Vec<&PkgMeta> = cache.iter().collect();
 
-    Json(hashes)
+    let json = serde_json::to_value(&meta).expect("list serialization failed");
+    Json(json)
 }
 
 async fn activate(
     State(state): State<Arc<PkgState>>,
     Path(hash): Path<String>,
 ) -> impl IntoResponse {
-    if state.cache.read().unwrap().contains(&hash) == false {
+    if state.cache.read().unwrap().contains_hash(&hash) == false {
         return Err((StatusCode::BAD_REQUEST, "package does not exist"));
     }
     *state.active_pkg_hash.write().unwrap() = Some(hash);
@@ -171,7 +188,7 @@ async fn deactivate(
     State(state): State<Arc<PkgState>>,
     Path(hash): Path<String>,
 ) -> impl IntoResponse {
-    if state.cache.read().unwrap().contains(&hash) == false {
+    if state.cache.read().unwrap().contains_hash(&hash) == false {
         return Err((StatusCode::BAD_REQUEST, "package does not exist"));
     }
 

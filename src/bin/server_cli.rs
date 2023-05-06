@@ -10,7 +10,7 @@ async fn main() {
 
     let pkg_path = env::var("PKG_PATH").expect("PKG_PATH environment variable required");
     let dir = PkgDir::new(PathBuf::from(pkg_path));
-    let cache = PkgCache::from_dir(&dir).await.unwrap();
+    let cache = PkgCache::from_dir_blocking(dir.clone()).unwrap();
 
     println!("listening on port: {}", PORT);
     server::listen(dir, cache, PORT).await;
