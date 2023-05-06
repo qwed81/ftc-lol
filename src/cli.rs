@@ -108,7 +108,7 @@ pub fn merge(dir: &PkgDir, cache: &mut PkgCache, pkg_name: String, paths: Vec<&s
 
     if cache.contains_hash(&hash_string) {
         println!("package is already downloaded");
-        println!("package hash is {}", &hash_string);
+        println!("package hash is {}", &hash_string[0..HASH_DISPLAY_LEN]);
         return;
     }
 
