@@ -1,40 +1,42 @@
 import os
 import shutil
 import subprocess
-import sys
 
-if os.path.exists("./target/release-min"):
-    shutil.rmtree("./target/release-min")
-
-if os.path.exists("./target/release-full"):
-    shutil.rmtree("./target/release-full")
-
-os.mkdir("./target/release-min")
-os.mkdir("./target/release-full")
-
+# build the actual program
 subprocess.run(["cargo", "build", "--release"])
 
-for file in ["patch", "segment_maker.exe", "server_cli.exe", "client_cli.exe"]:
-    shutil.copyfile("./target/release/" + file, "./target/release-full/" + file)
+# copy delete folder if it exists to start new
+if os.path.exists("./target/release-client"):
+    shutil.rmtree("./target/release-client")
+os.mkdir("./target/release-client")
 
+if os.path.exists("./target/release-server"):
+    shutil.rmtree("./target/release-server")
+os.mkdir("./target/release-server")
+
+# copy files over
 for file in ["patch", "client_cli.exe"]:
-    shutil.copyfile("./target/release/" + file, "./target/release-min/" + file)
+    shutil.copyfile("./target/release/" + file, "./target/release-client/" + file)
 
-# plan to remove in the future when proper support is implemented
-if len(sys.argv) < 2:
-    print("path to mod-tools is required")
-    exit(1)
+for file in ["server_cli.exe"]:
+    shutil.copyfile("./target/release/" + file, "./target/release-server/" + file)
 
-lol_tools_path = sys.argv[1]
-name = os.path.basename(os.path.realpath(lol_tools_path))
-if name != "mod-tools.exe":
-    print(f"file {name} is not mod-tools")
-    exit(1)
+# make the required directories
+os.mkdir("./target/release-client/client_packages")
+os.mkdir("./target/release-client/mods")
 
-shutil.copy(lol_tools_path, "./target/release-full/mod-tools.exe")
+os.mkdir("./target/release-server/server_packages")
 
-os.mkdir("./target/release-min/client_packages")
+# copy the environment variable file over to release (don't store secrets in this env var)
+shutil.copyfile("./client.env", "./target/release-client/client.env")
+print("client.env CONNECT_TO ip needs to be changed to remote server")
 
-os.mkdir("./target/release-full/client_packages")
-os.mkdir("./target/release-full/server_packages")
+shutil.copyfile("./server.env", "./target/release-server/server.env")
+
+# write out the easy click bat file that starts the process
+with open("./target/release-client/ftc.bat", "w") as f:
+    f.write("start client_cli")
+
+with open("./target/release-server/ftc_server.bat", "w") as f:
+    f.write("start server_cli")
 

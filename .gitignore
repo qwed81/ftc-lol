@@ -7,7 +7,3 @@
 /server_packages
 /mods
 /segs
-
-# ignore environment variables
-client.env
-server.env
