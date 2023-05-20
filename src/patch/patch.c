@@ -258,28 +258,20 @@ static void* my_CreateFileA(const char* name, uint32_t access, uint32_t share, v
     return handle;
 }
 
+// returns the closest lesser or equal segment replace
 static SegmentReplaceEntry* lookup_segment_replace(FileReplaceHeader* header, uint32_t file_off, uint32_t len) {
-    // do a binary search on the sorted entries to find the segment to replace
     uint32_t entry_count = header->segent_list_entry_count;
     SegmentReplaceEntry* start = (SegmentReplaceEntry*)(segment_table + header->segment_list_offset);
+    SegmentReplaceEntry* out = NULL;
     for (int i = 0; i < entry_count; i += 1) {
         SegmentReplaceEntry* entry = &start[i];
-        if (entry->start == file_off) {
-            if (entry->len != len) {
-                log_str(log_handle, "\nincorrect length requested file: ");
-                log_str(log_handle, header->name_start);
-                log_str(log_handle, " entry index: ");
-                log_int(log_handle, i);
-                log_str(log_handle, " requested: ");
-                log_int(log_handle, len);
-                log_str(log_handle, " have: ");
-                log_int(log_handle, entry->len);
-            }
-            return entry;
+        if (entry->start > file_off) {
+            break;
         }
+        out = entry;
     }
 
-    return NULL;
+    return out;
 }
 
 __attribute__((ms_abi))
@@ -292,31 +284,22 @@ static uint32_t my_ReadFile(void* handle, void* buffer, uint32_t bytes_to_read, 
 
     // Windows doesn't have GetFilePointer for some reason, but this works
     uint32_t file_off = SetFilePointer(handle, 0, NULL, FILE_CURRENT);
-
     SegmentReplaceEntry* seg = lookup_segment_replace(header, file_off, bytes_to_read);
-    if (seg == NULL) {
-        log_str(log_handle, "\ncould not get interval of mapped file: ");
-        log_str(log_handle, header->name_start);
-        return post_hook_ReadFile(handle, buffer, bytes_to_read, bytes_read, lp_overlapped);
-    }
+
+    // distance from the closest so we can offset into it's data
+    uint32_t data_delta = file_off - seg->start;
 
     if (seg->segment_type == GAME_SEGMENT) {
         // read from the game file at a different offset
-        SetFilePointer(handle, seg->data_off, NULL, FILE_START);
+        SetFilePointer(handle, seg->data_off + data_delta, NULL, FILE_START);
         uint32_t result = post_hook_ReadFile(handle, buffer, bytes_to_read, bytes_read, lp_overlapped);
         
         // reset the pointer so it can read to the correct spot again
-        SetFilePointer(handle, seg->start + seg->len, NULL, FILE_START);
+        SetFilePointer(handle, seg->start + data_delta + bytes_to_read, NULL, FILE_START);
         return result;
     } 
     else if (seg->segment_type == MOD_SEGMENT) {
-        char* data = segment_table + seg->data_off;
-        /*
-        log_str(log_handle, "\nReading from mod: ");
-        log_int(log_handle, (size_t)data);
-        log_str(log_handle, " len: ");
-        log_int(log_handle, (size_t)bytes_to_read);
-        */
+        char* data = segment_table + seg->data_off + data_delta;
 
         // mem copy the data to the from our mod to their buffer
         for (uint32_t i = 0; i < bytes_to_read; i += 1) {
