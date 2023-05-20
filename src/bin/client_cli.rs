@@ -84,7 +84,10 @@ fn take_commands(
 ) {
     let stdin = io::stdin();
     let mut str_buf = String::new();
-    println!("client cli, type help for commands");
+    println!(
+        "ftc client cli, lol patch {}, type help for commands",
+        ftc::get_current_patch()
+    );
     cli::print_status(&client);
 
     loop {

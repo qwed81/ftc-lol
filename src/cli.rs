@@ -13,7 +13,7 @@ use std::time::Instant;
 
 const HASH_DISPLAY_LEN: usize = 10;
 pub fn fmt_pkg_parts(hash: &str, name: &str, patch: &str) -> String {
-    format!("{} ({}:{})", &hash[0..HASH_DISPLAY_LEN], name, patch)
+    format!("{} ({} {})", &hash[0..HASH_DISPLAY_LEN], name, patch)
 }
 
 pub fn fmt_pkg(meta: &PkgMeta) -> String {
@@ -266,7 +266,7 @@ pub fn print_status(client: &PkgClient) {
 
     match status_result {
         Ok(status) => match status {
-            ConnectionStatus::Connected => println!("status: OK, delay: {}ms", time_taken),
+            ConnectionStatus::Connected => println!("server status: OK, delay: {}ms", time_taken),
         },
         Err(_) => println!("the server could not be reached"),
     }
