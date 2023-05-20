@@ -299,6 +299,7 @@ fn load_patch_loop(
 
         // check if there is an active package
         let Some(active) = active else {
+            add_message(&buffer, String::from("there was no active package"));
             loader
                 .resume_without_load()
                 .expect("could not resume, manually close LOL");
@@ -331,6 +332,19 @@ fn load_patch_loop(
                     continue;
                 }
             }
+        }
+
+        // ensure that the package is made for the same patch that the client is on
+        if &active.patch != &ftc::get_current_patch() {
+            add_message(
+                &buffer,
+                String::from("the active package is not made for the current patch, skipping load"),
+            );
+            loader
+                .resume_without_load()
+                .expect("could not resume, manually close LOL");
+            loader.wait_process_closed().unwrap();
+            continue;
         }
 
         let seg_table_path = dir.get_pkg_path(&active.hash).unwrap();
