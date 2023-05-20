@@ -43,6 +43,7 @@
 //
 //
 
+use std::collections::HashMap;
 use std::path::Path;
 
 mod fantome;
@@ -128,6 +129,11 @@ fn flatten_file_replace(files: Vec<FileReplace>) -> Vec<u8> {
         }
     }
 
+    // map each blob to their offset, so if two are equal we can use
+    // the old offset. This could be optimized with checksum if it becomes
+    // a problem
+    let mut blob_map: HashMap<&[u8], u32> = HashMap::new();
+
     // write out blobs
     for i in 0..files.len() {
         let mut segment_index = entry_table_offsets[i];
@@ -136,11 +142,22 @@ fn flatten_file_replace(files: Vec<FileReplace>) -> Vec<u8> {
             // and set the SegmentReplaceEntry.data_off to the offset
             // of where we are writing the data
             if let &SegmentReplace::ModSegment { start: _, data } = segment {
-                let offset = buf.len();
+                let offset = match blob_map.get(data) {
+                    Some(&offset) => offset, // use the already existing blob
+                    None => {
+                        // set the offset to where the blob will be
+                        let offset = buf.len() as u32;
+                        // write out the blob to the end of the buffer
+                        buf.extend(data);
+
+                        // cache the offset for equal data segments
+                        blob_map.insert(data, offset);
+                        offset
+                    }
+                };
+
                 let data_off_index = segment_index + 12;
                 set_u32(&mut buf, offset as u32, data_off_index);
-
-                buf.extend(data);
             }
 
             // increase by sizeof SegmentReplaceEntry to get
