@@ -1,6 +1,11 @@
 import os
 import shutil
 import subprocess
+import platform
+
+if platform.platform() != 'windows':
+    print("only supported on windows")
+    os._exit(1)
 
 # build the actual program
 subprocess.run(["cargo", "build", "--release"])
@@ -39,4 +44,5 @@ with open("./target/release-client/ftc.bat", "w") as f:
 
 with open("./target/release-server/ftc_server.bat", "w") as f:
     f.write("start server_cli")
+
 
